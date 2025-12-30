@@ -1,0 +1,3 @@
+# Python dependencies for the DataEngine function
+OpenImageIO
+# OpenEXR  # Optional fallback if you add a direct OpenEXR parser

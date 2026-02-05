@@ -1,22 +1,301 @@
 # exr-inspector
 
-Authoritative OpenEXR introspection, validation, and analysis for high-end VFX and animation pipelines.
+**Authoritative OpenEXR introspection, validation, and analysis for high-end VFX and animation pipelines.**
+
+exr-inspector is a serverless Python function designed for **VAST DataEngine** that provides comprehensive OpenEXR file introspection, validation, and analysis. Built for studio-grade environments (Pixar/DreamWorks class), it solves the problem of fragmented EXR tooling by providing lossless metadata extraction, safe streaming-based pixel analysis, policy-driven validation, and deterministic, machine-readable JSON output.
+
+---
+
+## Features
+
+### Current (v0.1.0 — Alpha)
+
+- ✅ **Complete Header Metadata Extraction** — Lossless parsing of all EXR attributes, color spaces, and channel definitions
+- ✅ **Multipart & Deep EXR Support** — Robust navigation through complex EXR structures via OpenImageIO
+- ✅ **Type-Safe Serialization** — Handles exotic OIIO types (vectors, matrices, boxes, binary blobs) → JSON
+- ✅ **Streaming-Ready Architecture** — Never loads full pixel data; reads headers only
+- ✅ **Event-Driven Serverless** — Runs on VAST DataEngine with zero infrastructure management
+- ✅ **Defensive Error Handling** — Gracefully handles malformed EXR files without crashing
+
+### Planned Features
+
+- ⬜ **Pixel Statistics** — Per-channel min/max/mean/stddev/NaN/Inf counts with configurable sampling
+- ⬜ **Validation Engine** — Policy-driven rules for structural, channel, compression, and naming validation
+- ⬜ **VAST DataBase Persistence** — Transactional writes with idempotent upserts
+- ⬜ **Deep EXR Analytics** — Flattening and advanced sample-level analysis
+- ⬜ **Testing Suite** — Comprehensive test coverage (to be added when logic stabilizes)
+- 🔮 **Phase 2+** — Policy DSL, asset DB export, hashing, EXR diffing, ML-ready embeddings
+
+---
 
 ## Goals
 
-- Lossless metadata extraction
-- Safe, streaming-based pixel analysis
-- Policy-driven validation
-- Deterministic, machine-readable output
+- **Lossless metadata extraction** from OpenEXR files without information loss
+- **Safe, streaming-based pixel analysis** with explicit opt-in (no full-image loads)
+- **Policy-driven validation** against customizable studio rules
+- **Deterministic, machine-readable JSON output** for pipeline automation
+- **Studio-grade reliability** for integration with VAST DataEngine and VAST DataBase
 
-## Commands
+---
 
-- Install deps: `make install`
-- Dev mode: `make dev APP=exr-inspector`
-- Build: `make build`
-- Lint: `make lint`
+## Tech Stack
 
-## Docs
+| Component | Technology |
+|-----------|-----------|
+| **Language** | Python 3.10+ |
+| **EXR Parsing** | OpenImageIO (OIIO) with OpenEXR fallback |
+| **System Libraries** | `libopenimageio-dev`, `libopenexr-dev` |
+| **Runtime Environment** | VAST DataEngine serverless functions |
+| **Storage Backend** | VAST DataBase for metadata persistence (planned) |
+| **Deployment** | Docker containers via VAST CLI |
 
-- `PRD.md`
-- `docs/PRD.md`
+---
+
+## Project Structure
+
+```
+git/
+├── README.md                          # This file
+├── PRD.md                             # Product Requirements Document
+├── docs/
+│   ├── overview.md                    # High-level architecture overview
+│   ├── architecture-diagram.md        # Architecture diagrams (Mermaid/PlantUML)
+│   ├── vast-integration.md            # VAST DataEngine/DataBase integration guide
+│   ├── deployment-checklist.md        # Deployment procedures
+│   ├── session-notes.md               # Development session notes
+│   ├── change-log.md                  # Version history
+│   └── iterations-matrix.md           # Release planning matrix
+└── functions/
+    └── exr_inspector/
+        ├── main.py                    # Primary handler (353 lines)
+        ├── requirements.txt           # Python dependencies
+        ├── Aptfile                    # System library dependencies
+        ├── README.md                  # Function-specific documentation
+        └── customDeps/                # Custom dependency directory (empty)
+```
+
+---
+
+## Entry Point & Architecture
+
+The complete implementation lives in **`functions/exr_inspector/main.py`**. The serverless handler (`handler(ctx, event)`) orchestrates the inspection workflow:
+
+```
+EXR File → OpenImageIO Reader → Header/Attributes/Channels → Schema Normalizer → JSON Output + DB Write
+```
+
+### Key Functions
+
+| Function | Purpose |
+|----------|---------|
+| `handler(ctx, event)` | Main DataEngine entry point; orchestrates entire inspection |
+| `_parse_config(event)` | Extracts feature toggles from event payload |
+| `_extract_file_path(event)` | Robust file path extraction (supports multiple key names) |
+| `_inspect_exr(path)` | Core EXR parsing; navigates multipart structures |
+| `_spec_to_part(spec, index)` | Converts OIIO image spec to part metadata |
+| `_spec_to_channels(spec, part_index)` | Extracts channel definitions with sampling rates |
+| `_attributes_from_spec(spec)` | Normalizes all EXR attributes |
+| `_serialize_value(value)` | Recursive serializer for complex OIIO types → JSON |
+| `_persist_to_vast_database(...)` | Placeholder for VAST DataBase writes |
+
+---
+
+## Configuration
+
+The function accepts configuration via the event payload:
+
+```python
+InspectorConfig:
+  enable_meta: bool = True          # Extract metadata (default enabled)
+  enable_stats: bool = False        # Compute pixel statistics (not yet implemented)
+  enable_deep_stats: bool = False   # Deep EXR stats (not yet implemented)
+  enable_validate: bool = False     # Run validation rules (not yet implemented)
+  policy_path: Optional[str] = None # Path to validation policy (future)
+  schema_version: int = 1           # Output schema version
+```
+
+### Output Schema
+
+```json
+{
+  "schema_version": 1,
+  "file": {
+    "path": "string",
+    "size_bytes": int,
+    "mtime": string (ISO8601)
+  },
+  "parts": [
+    {
+      "index": int,
+      "name": "string",
+      "width": int,
+      "height": int,
+      "tile_width": int,
+      "tile_height": int,
+      "compression": "string"
+    }
+  ],
+  "channels": [
+    {
+      "part_index": int,
+      "name": "string",
+      "type": "string",
+      "x_sampling": int,
+      "y_sampling": int
+    }
+  ],
+  "attributes": {
+    "key": "value (various types)"
+  },
+  "stats": {},
+  "validation": {},
+  "errors": []
+}
+```
+
+---
+
+## Installation & Setup
+
+### Local Development
+
+```bash
+# Install Python dependencies
+pip install -r functions/exr_inspector/requirements.txt
+
+# Install system libraries (Ubuntu/Debian)
+sudo apt-get install libopenimageio-dev libopenexr-dev
+
+# Install system libraries (macOS)
+brew install openimageio openexr
+```
+
+### Deployment to VAST DataEngine
+
+See `docs/deployment-checklist.md` for detailed deployment procedures. Quick start:
+
+```bash
+# Build container image
+vastde functions build exr-inspector -target ~/functions/exr_inspector --image-tag exr-inspector
+
+# Push to registry
+docker tag exr-inspector:latest CONTAINER_REGISTRY/ARTIFACT_SOURCE:TAG
+docker push CONTAINER_REGISTRY/ARTIFACT_SOURCE:TAG
+
+# Create function resource in VAST UI, add to pipeline triggers
+```
+
+---
+
+## Development
+
+### Make Commands (Aspirational — VAST CLI also available)
+
+```bash
+# Install dependencies
+make install
+
+# Development mode
+make dev APP=exr-inspector
+
+# Build container image
+make build
+
+# Run linter
+make lint
+```
+
+### Testing
+
+Tests are planned but not yet implemented. The codebase is in alpha stage; testing will be added once parsing logic stabilizes.
+
+---
+
+## Dependencies
+
+### Python
+
+- **OpenImageIO** — Industry-standard C++ library (Python bindings) for robust EXR parsing, multipart handling, and attribute extraction
+
+### System Libraries
+
+- **libopenimageio-dev** — Development headers for OpenImageIO
+- **libopenexr-dev** — OpenEXR C++ library headers
+
+---
+
+## Architecture Highlights
+
+### Event-Driven Serverless Design
+
+- **Stateless handler** receives events from VAST DataEngine triggers
+- **Single responsibility**: Parse input → extract metadata → output JSON → persist to DB
+- **No infrastructure management** — scales automatically with pipeline demand
+
+### Defensive Programming
+
+- Graceful error handling (returns errors in JSON, never crashes)
+- Robust configuration parsing (coerces multiple input types)
+- Try/except protection for malformed EXR files
+- Detailed error messages for pipeline debugging
+
+### Type-Safe Serialization
+
+The `_serialize_value()` function handles complex OIIO types:
+- Binary blobs (base64 encoded)
+- Vectors (x, y, z, w attributes)
+- Colors (r, g, b, a attributes)
+- Boxes (min/max attributes)
+- Matrices and numpy-like types
+- Recursive descent for nested structures
+
+### Streaming-Ready
+
+- Never loads full pixel data (headers only)
+- Pixel stats/analysis currently stubbed for future implementation
+- Supports multipart and deep EXR navigation via OIIO subimage iteration
+
+---
+
+## Documentation
+
+- **`PRD.md`** — Comprehensive Product Requirements Document with use cases, design decisions, and scope
+- **`docs/overview.md`** — High-level architecture and design philosophy
+- **`docs/architecture-diagram.md`** — Visual architecture diagrams (Mermaid/PlantUML)
+- **`docs/vast-integration.md`** — VAST DataEngine and VAST DataBase integration guide
+- **`docs/deployment-checklist.md`** — Step-by-step deployment procedures
+- **`docs/session-notes.md`** — Development session notes and context
+- **`functions/exr_inspector/README.md`** — Function-specific documentation
+
+---
+
+## Status
+
+- **Current Version**: v0.1.0 (Proposed Alpha)
+- **Stage**: Early development (core parsing logic complete, features stubbed)
+- **Testing**: Not yet implemented
+- **Production Ready**: No (alpha stage)
+
+---
+
+## Open Items
+
+1. **Pixel Statistics** — Streaming per-channel analysis (min/max/mean/stddev/NaN/Inf counts)
+2. **Validation Engine** — Policy-driven structural and metadata validation
+3. **VAST DataBase Client** — Actual transactional persistence (currently prints JSON to stdout)
+4. **Deep EXR Handling** — Sample-level analytics for deep EXRs
+5. **Testing Framework** — Unit and integration tests
+6. **Policy Format** — Finalize YAML vs JSON for validation policies
+7. **Schema Finalization** — Lock in JSON schema v1 before release
+
+---
+
+## License
+
+See repository for licensing information.
+
+---
+
+## Contact & Support
+
+For questions, issues, or contributions, refer to the project's issue tracker and documentation.

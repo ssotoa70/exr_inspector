@@ -187,6 +187,90 @@ docker push CONTAINER_REGISTRY/ARTIFACT_SOURCE:TAG
 
 ---
 
+## VAST DataBase Integration
+
+### Overview
+
+exr-inspector automatically persists extracted metadata to **VAST DataBase** via serverless DataEngine functions. This integration enables:
+
+- **Persistent metadata storage** — All EXR header attributes, channel definitions, and file metadata are transactionally written
+- **Vector-based analytics** — Metadata embeddings enable semantic queries across renders (e.g., find similar channel configurations)
+- **Hybrid querying** — Combine vector similarity searches with SQL filters for precise asset discovery
+- **Serverless persistence** — No additional infrastructure; DataEngine functions handle all database writes
+
+### Configuration
+
+To enable VAST DataBase integration, set the following environment variables in your VAST DataEngine function configuration:
+
+```bash
+VAST_DB_ENDPOINT=https://your-vast-instance.example.com
+VAST_DB_ACCESS_KEY=<your-api-key>
+VAST_DB_SECRET_KEY=<your-secret-key>
+VAST_DB_SCHEMA=exr_metadata  # Optional; defaults to 'exr_metadata'
+```
+
+These credentials are used by the `_persist_to_vast_database()` function to establish authenticated connections and write metadata transactionally.
+
+### Database Schema
+
+The VAST DataBase schema includes:
+
+| Table | Purpose |
+|-------|---------|
+| **files** | Root records with file path, size, mtime, and metadata embeddings |
+| **parts** | Multipart EXR structures (index, name, dimensions, tile info, compression) |
+| **channels** | Channel definitions (name, type, sampling rates, associated part) |
+| **attributes** | Key-value EXR attributes with type information for efficient querying |
+
+For detailed schema definitions, sampling strategies, and index configuration, see **[VECTOR_STRATEGY.md](./docs/VECTOR_STRATEGY.md)**.
+
+### Vector Capabilities
+
+With metadata persisted to VAST DataBase, you can:
+
+- **Find similar renders** — Query by metadata vector to discover renders with matching channel structures or attributes
+- **Query by channel patterns** — Filter files by channel names, types, and sampling configurations
+- **Hybrid queries** — Combine vector similarity (e.g., "find renders with similar color space setup") with SQL predicates (e.g., "and width >= 1920")
+- **Attribute-based discovery** — Search by custom EXR attributes (e.g., DCC software, artist name, project code)
+
+See **[VAST_ANALYTICS_QUERIES.md](./docs/VAST_ANALYTICS_QUERIES.md)** for query examples and best practices.
+
+### Deployment
+
+To deploy exr-inspector with VAST DataBase persistence:
+
+1. **Set environment variables** in VAST DataEngine function configuration:
+   ```
+   VAST_DB_ENDPOINT=...
+   VAST_DB_ACCESS_KEY=...
+   VAST_DB_SECRET_KEY=...
+   VAST_DB_SCHEMA=exr_metadata
+   ```
+
+2. **Configure S3 triggers** (or other storage events) to invoke the function on file uploads:
+   ```
+   Trigger: s3:ObjectCreated:*
+   Prefix: renders/ (optional)
+   Function: exr-inspector
+   ```
+
+3. **Monitor persistence** via DataEngine logs:
+   ```
+   [INFO] Persisting metadata for path=renders/shot_001.exr
+   [INFO] Wrote 1 file, 3 parts, 12 channels to VAST DataBase
+   ```
+
+For complete deployment instructions, see **[docs/deployment-checklist.md](./docs/deployment-checklist.md)** and **[docs/SERVERLESS_INTEGRATION.md](./docs/SERVERLESS_INTEGRATION.md)**.
+
+### Documentation Links
+
+- **[VECTOR_STRATEGY.md](./docs/VECTOR_STRATEGY.md)** — Embedding generation, schema design, and indexing strategy
+- **[VAST_ANALYTICS_QUERIES.md](./docs/VAST_ANALYTICS_QUERIES.md)** — Example queries and analytics patterns
+- **[SERVERLESS_INTEGRATION.md](./docs/SERVERLESS_INTEGRATION.md)** — DataEngine function lifecycle and deployment workflow
+- **[vast-integration.md](./docs/vast-integration.md)** — Lower-level VAST DataEngine/DataBase API integration guide
+
+---
+
 ## Development
 
 ### Make Commands (Aspirational — VAST CLI also available)

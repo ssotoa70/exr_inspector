@@ -15,6 +15,8 @@ try:
 except ImportError:  # pragma: no cover - runtime dependency
     oiio = None
 
+from vast_db_persistence import persist_to_vast_database
+
 
 @dataclass
 class InspectorConfig:
@@ -66,7 +68,10 @@ def handler(ctx: Any, event: Dict[str, Any]) -> Dict[str, Any]:
     if config.enable_validate:
         result["validation"] = _validation_placeholder()
 
-    _persist_to_vast_database(result, event)
+    # Persist to VAST DataBase with vector embeddings
+    persistence_result = persist_to_vast_database(result, event)
+    result["persistence"] = persistence_result
+
     return result
 
 
@@ -306,20 +311,6 @@ def _validation_placeholder() -> Dict[str, Any]:
     return {"status": "skipped", "reason": "validation not implemented"}
 
 
-def _persist_to_vast_database(payload: Dict[str, Any], event: Dict[str, Any]) -> None:
-    """Placeholder for VAST DataBase persistence."""
-    _ = event
-    if not _vast_db_configured():
-        return
-
-    # TODO: Implement using VAST DataBase client or supported protocol.
-    # For now, emit a single-line JSON to stdout for pipeline capture.
-    print(json.dumps({"type": "vastdb_upsert", "payload": payload}))
-
-
-def _vast_db_configured() -> bool:
-    required = ["VAST_DB_HOST", "VAST_DB_USER", "VAST_DB_PASSWORD", "VAST_DB_NAME"]
-    return all(os.environ.get(key) for key in required)
 
 
 def _isoformat(timestamp: float) -> str:

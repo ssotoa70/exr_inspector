@@ -1,5 +1,12 @@
 # exr-inspector
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ssotoa70/exr_inspector/blob/main/LICENSE)
+[![Release](https://img.shields.io/badge/release-v0.9.0-blue.svg)](https://github.com/ssotoa70/exr_inspector/releases/tag/v0.9.0)
+[![Python](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/badge/tests-45+-brightgreen.svg)](./functions/exr_inspector/test_vast_db_persistence.py)
+[![Code Style](https://img.shields.io/badge/code%20style-type--hints-blueviolet.svg)](https://www.python.org/dev/peps/pep-0484/)
+[![Status](https://img.shields.io/badge/status-Release%20Candidate-orange.svg)](#features)
+
 **Authoritative OpenEXR introspection, validation, and analysis for high-end VFX and animation pipelines.**
 
 exr-inspector is a serverless Python function designed for **VAST DataEngine** that provides comprehensive OpenEXR file introspection, validation, and analysis. Built for studio-grade environments (Pixar/DreamWorks class), it solves the problem of fragmented EXR tooling by providing lossless metadata extraction, safe streaming-based pixel analysis, policy-driven validation, and deterministic, machine-readable JSON output.

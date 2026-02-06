@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+__version__ = "0.9.0"
+
 try:
     import OpenImageIO as oiio
 except ImportError:  # pragma: no cover - runtime dependency

@@ -826,9 +826,346 @@ For issues not covered here:
 
 ---
 
+## Rollback Procedures
+
+### Overview
+
+Rollback procedures allow you to revert to a previous version of exr-inspector if issues arise during or after deployment.
+
+### Pre-Rollback Checklist
+
+Before initiating a rollback, verify:
+
+1. **Issue severity**: Is this a critical issue (data loss, security) or minor issue?
+2. **Impact scope**: How many files/operations are affected?
+3. **Backup status**: Is a backup of the database available?
+4. **Rollback window**: How much downtime is acceptable?
+
+---
+
+### Rollback Scenario 1: Rolling Back from v1.x to v0.9.0
+
+**When to use**: If v1.x deployment has critical issues with pixel statistics or validation features.
+
+**Step 1: Stop New Deployments**
+
+```bash
+# Stop any running v1.x functions
+vast function stop exr-inspector
+
+# Verify function is stopped
+vast function status exr-inspector
+```
+
+**Step 2: Backup Current Database State**
+
+```bash
+# Create backup of current schema
+python scripts/backup_schema.py \
+    --endpoint s3.us-east-1.vastdata.com \
+    --schema exr_metadata \
+    --backup-path s3://backups/exr_metadata_v1_x_backup_2026-02-06.tar.gz
+
+# Verify backup
+ls -lh s3://backups/exr_metadata_v1_x_backup_2026-02-06.tar.gz
+```
+
+**Step 3: Redeploy v0.9.0 Code**
+
+```bash
+# Build v0.9.0 container image
+vastde functions build exr-inspector \
+    --target ~/functions/exr_inspector \
+    --image-tag exr-inspector:v0.9.0
+
+# Tag for registry
+docker tag exr-inspector:v0.9.0 \
+    CONTAINER_REGISTRY/exr-inspector:v0.9.0
+
+# Push to registry
+docker push CONTAINER_REGISTRY/exr-inspector:v0.9.0
+
+# Update function to use v0.9.0 image
+vast function update exr-inspector \
+    --image CONTAINER_REGISTRY/exr-inspector:v0.9.0
+
+# Verify deployment
+vast function logs exr-inspector --tail 20
+```
+
+**Step 4: Verify Rollback**
+
+```bash
+# Test function with sample EXR file
+python -c "
+import requests
+response = requests.post(
+    'https://your-vast-endpoint.example.com/functions/exr-inspector',
+    json={'data': {'file_path': '/test.exr'}}
+)
+assert response.status_code == 200
+assert response.json()['schema_version'] == 1
+print('✓ Rollback verification passed')
+"
+
+# Check function logs for errors
+vast function logs exr-inspector --tail 50
+```
+
+**Step 5: Restore Database (if needed)**
+
+If database was corrupted during v1.x deployment:
+
+```bash
+# Stop function (again, to ensure no writes)
+vast function stop exr-inspector
+
+# Restore from backup
+python scripts/restore_schema.py \
+    --endpoint s3.us-east-1.vastdata.com \
+    --schema exr_metadata \
+    --backup-path s3://backups/exr_metadata_v1_0_backup_2026-02-06.tar.gz
+
+# Verify restore
+python scripts/verify_schema.py \
+    --endpoint s3.us-east-1.vastdata.com \
+    --schema exr_metadata
+
+# Restart function
+vast function start exr-inspector
+```
+
+---
+
+### Rollback Scenario 2: Rolling Back from v0.9.1 to v0.9.0
+
+**When to use**: If a patch release (v0.9.1) introduces bugs, roll back to v0.9.0.
+
+**Key Difference**: No database schema changes between patch versions, so rollback is simpler.
+
+**Step 1: Stop Function**
+
+```bash
+vast function stop exr-inspector
+```
+
+**Step 2: Redeploy v0.9.0 Code**
+
+```bash
+# Build v0.9.0 image
+vastde functions build exr-inspector \
+    --target ~/functions/exr_inspector \
+    --image-tag exr-inspector:v0.9.0
+
+docker tag exr-inspector:v0.9.0 CONTAINER_REGISTRY/exr-inspector:v0.9.0
+docker push CONTAINER_REGISTRY/exr-inspector:v0.9.0
+
+# Update function
+vast function update exr-inspector \
+    --image CONTAINER_REGISTRY/exr-inspector:v0.9.0
+
+# Restart
+vast function start exr-inspector
+```
+
+**Step 3: Verify**
+
+```bash
+# Test function
+python scripts/test_function.py --version v0.9.0
+```
+
+**No database restore needed**: The database schema is identical, so data remains intact.
+
+---
+
+### Rollback Scenario 3: Partial Rollback (Schema Revert)
+
+**When to use**: If migration to v1.1 created new tables that cause performance issues, but you want to keep v0.9.0 data intact.
+
+**Step 1: Drop New Tables (Keep Old Data)**
+
+```bash
+# Connect to database
+vast db connect exr_metadata
+
+# Drop new v1.1 tables (keep v0.9.0 tables)
+DROP TABLE IF EXISTS exr_metadata.pixel_stats;
+DROP TABLE IF EXISTS exr_metadata.validation_results;
+
+# Verify old tables still exist
+SELECT * FROM exr_metadata.files LIMIT 1;
+SELECT * FROM exr_metadata.channels LIMIT 1;
+```
+
+**Step 2: Redeploy v0.9.0 Code**
+
+```bash
+# Code rollback (same as Scenario 2)
+vast function update exr-inspector \
+    --image CONTAINER_REGISTRY/exr-inspector:v0.9.0
+vast function start exr-inspector
+```
+
+**Step 3: Verify**
+
+```bash
+# All v0.9.0 data is still available
+python scripts/verify_schema.py \
+    --endpoint s3.us-east-1.vastdata.com \
+    --schema exr_metadata \
+    --expected-tables files,parts,channels,attributes
+```
+
+**Benefit**: You can later re-enable v1.1 without re-inspecting all files (if tables are restored).
+
+---
+
+### Data Persistence During Rollback
+
+#### What Persists
+
+**Always preserved**:
+- All files table data (path, size, mtime, metadata, embeddings)
+- All parts table data (multipart structures)
+- All channels table data (channel definitions)
+- All attributes table data (custom EXR attributes)
+
+**Conditionally preserved** (depending on rollback method):
+- New v1.1 tables (pixel_stats, validation_results) — dropped in schema revert, kept in full backup restore
+- Embeddings and fingerprints — always preserved in v0.9.0+ schema
+
+#### Data Loss Prevention
+
+```python
+# Before dropping tables, export to archive
+def archive_before_rollback(session, schema):
+    """Export v1.1 tables to Parquet before dropping."""
+
+    # Export pixel_stats
+    session.execute(f"""
+    COPY (SELECT * FROM {schema}.pixel_stats)
+    TO PARQUET 's3://backups/pixel_stats_archive_2026-02-06.parquet'
+    """)
+
+    # Export validation_results
+    session.execute(f"""
+    COPY (SELECT * FROM {schema}.validation_results)
+    TO PARQUET 's3://backups/validation_results_archive_2026-02-06.parquet'
+    """)
+
+    logger.info("✓ v1.1 tables archived to S3")
+```
+
+---
+
+### Testing Rollback in Staging
+
+Before rolling back production, test the procedure:
+
+**Step 1: Clone Production Schema to Staging**
+
+```bash
+python scripts/copy_sample_data.py \
+    --source-schema exr_metadata \
+    --target-schema exr_metadata_staging \
+    --sample-size 100
+```
+
+**Step 2: Simulate v1.1 Deployment on Staging**
+
+```bash
+# Migrate staging to v1.1
+python scripts/migrate_v1_0_to_v1_1.py \
+    --schema exr_metadata_staging
+
+# Insert some test pixel_stats
+python scripts/insert_test_stats.py \
+    --schema exr_metadata_staging \
+    --file-count 100
+```
+
+**Step 3: Test Rollback**
+
+```bash
+# Verify current state
+python scripts/verify_schema.py --schema exr_metadata_staging
+
+# Perform rollback (drop v1.1 tables)
+python scripts/rollback_v1_1.py \
+    --schema exr_metadata_staging \
+    --archive-tables
+
+# Verify v0.9.0 state
+python scripts/verify_schema.py --schema exr_metadata_staging
+
+# Confirm v0.9.0 data still intact
+python scripts/data_integrity_check.py \
+    --schema exr_metadata_staging
+```
+
+**Step 4: Verify Deployment Code Works**
+
+```bash
+# Deploy v0.9.0 code
+vast function update exr-inspector \
+    --image CONTAINER_REGISTRY/exr-inspector:v0.9.0
+
+# Test with staging data
+python scripts/test_function.py \
+    --schema exr_metadata_staging \
+    --sample-files 10
+```
+
+---
+
+### Rollback Checklist
+
+Before rolling back production:
+
+- [ ] Identified root cause of issue
+- [ ] Determined rollback scenario (code only, schema revert, or full restore)
+- [ ] Created backup of current state
+- [ ] Tested rollback procedure on staging schema
+- [ ] Scheduled maintenance window (off-peak hours)
+- [ ] Notified team members
+- [ ] Have v0.9.0 container image ready
+- [ ] Have database restore script ready (if needed)
+- [ ] Document rollback reason and completion
+
+---
+
+### Post-Rollback Verification Checklist
+
+After rolling back:
+
+- [ ] Function is running and responsive
+- [ ] Sample EXR files are processed correctly
+- [ ] Database integrity verified (row counts, constraints)
+- [ ] No errors in function logs
+- [ ] Vector embeddings still present in database
+- [ ] Can successfully query VAST DataBase
+- [ ] Team confirmed issue is resolved
+
+---
+
+### Contacting Support During Rollback
+
+If issues arise during rollback:
+
+1. **Stop function immediately**: `vast function stop exr-inspector`
+2. **Do not attempt recovery**: Call for help first
+3. **Preserve logs**: `vast function logs exr-inspector > rollback_issue.log`
+4. **Restore from backup**: If uncertain, restore from backup
+5. **Document issue**: Include logs, timestamps, and actions taken
+
+---
+
 ## See Also
 
 - [VECTOR_STRATEGY.md](VECTOR_STRATEGY.md) - Embedding computation details
 - [SERVERLESS_INTEGRATION.md](SERVERLESS_INTEGRATION.md) - DataEngine setup
 - [VAST_ANALYTICS_QUERIES.md](VAST_ANALYTICS_QUERIES.md) - Query examples
 - [SCHEMA_EVOLUTION.md](SCHEMA_EVOLUTION.md) - Schema management
+- [SCHEMA_MIGRATION_STRATEGY.md](SCHEMA_MIGRATION_STRATEGY.md) - Migration procedures
+- [DEPRECATION_POLICY.md](DEPRECATION_POLICY.md) - API stability commitment

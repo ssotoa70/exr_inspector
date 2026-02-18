@@ -68,24 +68,37 @@ exr-inspector is a serverless Python function designed for **VAST DataEngine** t
 
 ```
 git/
-├── README.md                          # This file
-├── PRD.md                             # Product Requirements Document
+├── README.md                                # This file
+├── PRD.md                                   # Product Requirements Document
+├── deploy.sh                                # ⭐ Automated deployment script (production)
+├── .env.example                             # ⭐ Configuration template for deploy.sh
+├── DEPLOYMENT_AUTOMATION.md                 # ⭐ Complete guide for automated deployment
 ├── docs/
-│   ├── overview.md                    # High-level architecture overview
-│   ├── architecture-diagram.md        # Architecture diagrams (Mermaid/PlantUML)
-│   ├── vast-integration.md            # VAST DataEngine/DataBase integration guide
-│   ├── deployment-checklist.md        # Deployment procedures
-│   ├── session-notes.md               # Development session notes
-│   ├── change-log.md                  # Version history
-│   └── iterations-matrix.md           # Release planning matrix
+│   ├── overview.md                          # High-level architecture overview
+│   ├── architecture-diagram.md              # Architecture diagrams (Mermaid/PlantUML)
+│   ├── vast-integration.md                  # VAST DataEngine/DataBase integration guide
+│   ├── deployment-checklist.md              # Manual deployment procedures (reference)
+│   ├── DEV_RUNBOOK.md                       # ⭐ Development runbook (local testing, no VAST)
+│   ├── PROD_RUNBOOK.md                      # ⭐ Production runbook (manual reference)
+│   ├── QUICK_START_VAST.md                  # Step-by-step deployment guide
+│   ├── TROUBLESHOOTING.md                   # 30+ common issues & solutions
+│   ├── VECTOR_STRATEGY.md                   # Vector embedding algorithms
+│   ├── VAST_ANALYTICS_QUERIES.md            # SQL query examples
+│   ├── session-notes.md                     # Development session notes
+│   ├── change-log.md                        # Version history
+│   └── iterations-matrix.md                 # Release planning matrix
 └── functions/
     └── exr_inspector/
-        ├── main.py                    # Primary handler (353 lines)
-        ├── requirements.txt           # Python dependencies
-        ├── Aptfile                    # System library dependencies
-        ├── README.md                  # Function-specific documentation
-        └── customDeps/                # Custom dependency directory (empty)
+        ├── main.py                          # Primary handler (353 lines)
+        ├── vast_db_persistence.py           # VAST DataBase persistence module (850+ lines)
+        ├── test_vast_db_persistence.py      # Comprehensive tests (45+ test cases)
+        ├── requirements.txt                 # Python dependencies
+        ├── Aptfile                          # System library dependencies
+        ├── README.md                        # Function-specific documentation
+        └── customDeps/                      # Custom dependency directory (empty)
 ```
+
+**⭐ New in v0.9.0:** Automated deployment scripts and comprehensive runbooks
 
 ---
 
@@ -181,11 +194,49 @@ sudo apt-get install libopenimageio-dev libopenexr-dev
 
 # Install system libraries (macOS)
 brew install openimageio openexr
+
+# Run local tests (no VAST cluster required)
+pytest functions/exr_inspector/test_vast_db_persistence.py -v
 ```
 
-### Deployment to VAST DataEngine
+**See `docs/DEV_RUNBOOK.md`** for complete local development workflow.
 
-See `docs/deployment-checklist.md` for detailed deployment procedures. Quick start:
+### Automated Deployment to VAST DataEngine (Recommended)
+
+**New in v0.9.0:** One-command automated deployment with error handling and verification.
+
+```bash
+# 1. Prepare configuration
+cp .env.example .env
+nano .env  # Fill in VAST cluster details
+
+# 2. Run automated deployment
+./deploy.sh --config .env
+
+# 3. Follow generated instructions for VAST UI setup
+```
+
+**Total time:** 60-90 minutes (first deployment), 20-30 minutes (updates)
+
+✅ Automatically handles:
+- Prerequisites verification (VAST CLI, Docker, Python)
+- Cluster connectivity testing
+- Container image building
+- Registry authentication and push
+- Schema generation for VAST DataBase
+- Environment variable configuration
+- Local smoke tests (45+ tests)
+
+See **`DEPLOYMENT_AUTOMATION.md`** for detailed guide and **`.env.example`** for configuration.
+
+### Manual Deployment to VAST DataEngine
+
+For manual step-by-step deployment, see:
+- **`docs/PROD_RUNBOOK.md`** — Complete 5-phase production deployment guide
+- **`docs/deployment-checklist.md`** — Manual deployment checklist
+- **`docs/QUICK_START_VAST.md`** — Step-by-step 60-75 minute guide
+
+Quick manual start:
 
 ```bash
 # Build container image
@@ -281,6 +332,38 @@ For complete deployment instructions, see **[docs/deployment-checklist.md](./doc
 - **[VAST_ANALYTICS_QUERIES.md](./docs/VAST_ANALYTICS_QUERIES.md)** — Example queries and analytics patterns
 - **[SERVERLESS_INTEGRATION.md](./docs/SERVERLESS_INTEGRATION.md)** — DataEngine function lifecycle and deployment workflow
 - **[vast-integration.md](./docs/vast-integration.md)** — Lower-level VAST DataEngine/DataBase API integration guide
+
+---
+
+## Deployment Runbooks & Documentation
+
+exr-inspector includes comprehensive deployment documentation for different audiences:
+
+### For Developers (Local Testing)
+
+**`docs/DEV_RUNBOOK.md`** — 15-20 minute local setup
+- Environment setup (Python venv, dependencies)
+- Running 45+ unit tests locally (no VAST cluster needed)
+- Local debugging and mock data scenarios
+- Pre-commit verification checklist
+
+### For DevOps/SRE (Production Deployment)
+
+**Automated (Recommended):**
+- **`deploy.sh`** — One-command automated deployment script
+- **`DEPLOYMENT_AUTOMATION.md`** — Complete automation guide
+- **`.env.example`** — Configuration template
+
+**Manual (Reference):**
+- **`docs/PROD_RUNBOOK.md`** — 5-phase manual deployment guide (60-90 min)
+- **`docs/QUICK_START_VAST.md`** — Step-by-step deployment guide
+- **`docs/deployment-checklist.md`** — Deployment checklist
+
+### For All Users
+
+- **`docs/TROUBLESHOOTING.md`** — 30+ common issues and solutions
+- **`docs/VAST_ANALYTICS_QUERIES.md`** — SQL query examples and best practices
+- **`docs/VECTOR_STRATEGY.md`** — Vector embedding algorithms and usage
 
 ---
 

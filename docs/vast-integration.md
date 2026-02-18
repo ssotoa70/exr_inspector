@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document captures the intended integration of `exr-inspector` with VAST DataEngine and VAST DataBase. It is based on publicly available product pages plus excerpts from the local VAST DataEngine user guide PDF provided in `/Users/sergio.soto/Documents/RAG/`.
+This document captures the intended integration of `exr-inspector` with VAST DataEngine and VAST DataBase. It is based on publicly available product pages and the official VAST DataEngine User Guide.
 
 ## DataEngine Compatibility
 

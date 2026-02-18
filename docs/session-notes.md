@@ -31,4 +31,4 @@ This project is building `exr-inspector`, a serverless Python function compatibl
 
 ## References
 
-- VAST DataEngine user guide PDF: `/Users/sergio.soto/Documents/RAG/VAST Cluster 5.4 VAST DataEngine User Guide_2025-12-29 12.34.pdf`
+- VAST DataEngine user guide: Available from VAST vendor documentation

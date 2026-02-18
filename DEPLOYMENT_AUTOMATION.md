@@ -11,7 +11,7 @@ This guide shows you how to use the automated `deploy.sh` script to deploy exr-i
 ### Step 1: Prepare Configuration
 
 ```bash
-cd /Users/sergio.soto/Development/ai-apps/code/exr-inspector/git
+cd exr-inspector
 
 # Copy configuration template
 cp .env.example .env
@@ -622,7 +622,7 @@ The automated deployment script (`deploy.sh`) streamlines exr-inspector deployme
 
 **Getting Started:**
 ```bash
-cd /Users/sergio.soto/Development/ai-apps/code/exr-inspector/git
+cd exr-inspector
 cp .env.example .env
 # Edit .env with VAST cluster details
 ./deploy.sh --config .env

@@ -38,7 +38,7 @@
 
 ### 1. main.py Changes
 
-**Location**: `/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/functions/exr_inspector/main.py`
+**Location**: `./exr-inspector (or $PROJECT_ROOT)/functions/exr_inspector/main.py`
 
 **Change 1 - Add Import** (Line 18)
 ```python
@@ -81,7 +81,7 @@ def _vast_db_configured() -> bool:
 
 #### vast_db_persistence.py
 **Size**: 34 KB (850+ lines)
-**Location**: `/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/functions/exr_inspector/vast_db_persistence.py`
+**Location**: `./exr-inspector (or $PROJECT_ROOT)/functions/exr_inspector/vast_db_persistence.py`
 
 **Contents**:
 ```
@@ -110,7 +110,7 @@ Main Persistence Function          (300 lines)
 
 #### test_vast_db_persistence.py
 **Size**: 21 KB (670+ lines)
-**Location**: `/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/functions/exr_inspector/test_vast_db_persistence.py`
+**Location**: `./exr-inspector (or $PROJECT_ROOT)/functions/exr_inspector/test_vast_db_persistence.py`
 
 **Test Classes**:
 - TestVectorEmbeddings (14 tests)
@@ -126,7 +126,7 @@ Main Persistence Function          (300 lines)
 
 #### VAST_DB_INTEGRATION.md
 **Size**: 14 KB
-**Location**: `/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/functions/exr_inspector/VAST_DB_INTEGRATION.md`
+**Location**: `./exr-inspector (or $PROJECT_ROOT)/functions/exr_inspector/VAST_DB_INTEGRATION.md`
 
 **Sections**:
 - Overview
@@ -146,7 +146,7 @@ Main Persistence Function          (300 lines)
 
 #### SCHEMA_AND_DEPLOYMENT.md
 **Size**: 14 KB
-**Location**: `/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/functions/exr_inspector/SCHEMA_AND_DEPLOYMENT.md`
+**Location**: `./exr-inspector (or $PROJECT_ROOT)/functions/exr_inspector/SCHEMA_AND_DEPLOYMENT.md`
 
 **Sections**:
 - Database Schema Definition (complete SQL)
@@ -166,7 +166,7 @@ Main Persistence Function          (300 lines)
 
 #### USAGE_AND_EXAMPLES.md
 **Size**: 16 KB
-**Location**: `/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/functions/exr_inspector/USAGE_AND_EXAMPLES.md`
+**Location**: `./exr-inspector (or $PROJECT_ROOT)/functions/exr_inspector/USAGE_AND_EXAMPLES.md`
 
 **Sections**:
 - Quick Start
@@ -182,7 +182,7 @@ Main Persistence Function          (300 lines)
 
 #### VAST_DB_IMPLEMENTATION_SUMMARY.md
 **Size**: 13 KB
-**Location**: `/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/VAST_DB_IMPLEMENTATION_SUMMARY.md`
+**Location**: `./exr-inspector (or $PROJECT_ROOT)/VAST_DB_IMPLEMENTATION_SUMMARY.md`
 
 **Contents**:
 - Overview
@@ -203,7 +203,7 @@ Main Persistence Function          (300 lines)
 
 #### IMPLEMENTATION_CHECKLIST.md
 **Size**: 5 KB
-**Location**: `/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/IMPLEMENTATION_CHECKLIST.md`
+**Location**: `./exr-inspector (or $PROJECT_ROOT)/IMPLEMENTATION_CHECKLIST.md`
 
 **This file** - Complete breakdown of all changes
 
@@ -389,7 +389,7 @@ from vast_db_persistence import persist_to_vast_database
 ## File Locations
 
 ```
-/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/
+./exr-inspector (or $PROJECT_ROOT)/
 
 functions/exr_inspector/
 ├── main.py                              (MODIFIED)

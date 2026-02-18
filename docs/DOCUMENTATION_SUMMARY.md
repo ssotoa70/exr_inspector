@@ -301,7 +301,7 @@ Example: Embedding algorithm changes link to SCHEMA_EVOLUTION migration strategy
 All documentation files are located in:
 
 ```
-/Users/sergio.soto/Development/ai-apps/code/exr-inspector/git/docs/
+./docs/
 
 ├── VECTOR_STRATEGY.md              (443 lines)
 ├── VAST_ANALYTICS_QUERIES.md       (494 lines)

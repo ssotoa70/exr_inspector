@@ -27,43 +27,63 @@ brew install openimageio openexr          # macOS
 # 3. Run tests (no VAST cluster required)
 pytest functions/exr_inspector/test_vast_db_persistence.py -v
 
-# 4. Deploy to VAST DataEngine
-cp .env.example .env && nano .env         # Fill in cluster details
-./deploy.sh --config .env
+# 4. Build container image (see docs/DEPLOY.md for full guide)
+brew install buildpacks/tap/pack          # one time
+docker pull docker.selab.vastdata.com:5000/vast-builder:latest
+pack build sergio-exr-inspector:latest \
+  --builder "docker.selab.vastdata.com:5000/vast-builder:latest" \
+  --path functions/exr_inspector \
+  --trust-builder --env "APP_HANDLER=main.py"
+
+# 5. Tag and push to registry
+docker tag sergio-exr-inspector:latest \
+  docker.selab.vastdata.com:5000/sergio.soto/exr-inspector:latest
+docker push docker.selab.vastdata.com:5000/sergio.soto/exr-inspector:latest
 ```
+
+> **Note**: The `vastde functions build` command has a known Docker API version
+> bug in v5.4.x dev builds. Use `pack` directly as shown above.
+> See [docs/DEPLOY.md](./docs/DEPLOY.md) for full details and troubleshooting.
 
 ---
 
 ## Installation & Deployment
 
-### Automated Deployment (Recommended)
+### Build & Deploy
 
-One-command deployment with prerequisites verification, container build, and smoke tests:
+The function image is built using [Cloud Native Buildpacks](https://buildpacks.io/) with the VAST builder image. Two options:
 
-```bash
-cp .env.example .env
-nano .env                    # Fill in VAST cluster details
-./deploy.sh --config .env    # Build, push, configure, verify
-```
-
-See **[DEPLOYMENT_AUTOMATION.md](./DEPLOYMENT_AUTOMATION.md)** for the full guide.
-
-### Manual Deployment
+**Option A — `vastde` CLI** (may fail on Docker Desktop 4.34+, see [Known Issues](./docs/DEPLOY.md#known-issues)):
 
 ```bash
-# Build container image
-vastde functions build exr-inspector -target ~/functions/exr_inspector --image-tag exr-inspector
-
-# Push to registry
-docker tag exr-inspector:latest CONTAINER_REGISTRY/ARTIFACT_SOURCE:TAG
-docker push CONTAINER_REGISTRY/ARTIFACT_SOURCE:TAG
-
-# Create function resource in VAST UI, add to pipeline triggers
+vastde functions build exr-inspector \
+  -t ~/dataengine/exr_inspector/functions/exr_inspector \
+  -T sergio-exr-inspector
 ```
 
-For step-by-step guides:
+**Option B — `pack` CLI** (recommended workaround):
+
+```bash
+brew install buildpacks/tap/pack
+docker pull docker.selab.vastdata.com:5000/vast-builder:latest
+
+pack build sergio-exr-inspector:latest \
+  --builder "docker.selab.vastdata.com:5000/vast-builder:latest" \
+  --path functions/exr_inspector \
+  --trust-builder --env "APP_HANDLER=main.py"
+```
+
+Then tag and push:
+
+```bash
+docker tag sergio-exr-inspector:latest \
+  docker.selab.vastdata.com:5000/sergio.soto/exr-inspector:latest
+docker push docker.selab.vastdata.com:5000/sergio.soto/exr-inspector:latest
+```
+
+For the complete walkthrough (schema creation, VAST UI setup, triggers, verification):
+- **[docs/DEPLOY.md](./docs/DEPLOY.md)** — Canonical deployment guide
 - **[docs/PROD_RUNBOOK.md](./docs/PROD_RUNBOOK.md)** — 5-phase production deployment
-- **[docs/QUICK_START_VAST.md](./docs/QUICK_START_VAST.md)** — 60-75 minute walkthrough
 - **[docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)** — 30+ common issues and solutions
 
 ---

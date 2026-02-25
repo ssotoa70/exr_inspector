@@ -77,7 +77,7 @@ Collect and securely store the following information:
 VAST_DB_ENDPOINT="s3.region.vastdata.com"
 VAST_DB_ACCESS_KEY="<your-access-key>"
 VAST_DB_SECRET_KEY="<your-secret-key>"
-VAST_DB_REGION="us-east-1"
+VAST_DB_BUCKET="exr-data"
 VAST_DB_SCHEMA="exr_metadata"
 
 # 2. Container Registry Credentials

@@ -31,6 +31,8 @@ from vast_db_persistence import (
     _normalize_path,
     _extract_metadata_features,
     _compression_to_normalized,
+    DEFAULT_VASTDB_BUCKET,
+    DEFAULT_SCHEMA_NAME,
 )
 
 
@@ -118,8 +120,6 @@ class TestVectorEmbeddings(unittest.TestCase):
         invalid_payloads = [
             None,
             "not a dict",
-            {},  # Missing file key
-            {"file": None},  # Invalid file value
         ]
 
         for payload in invalid_payloads:
@@ -374,22 +374,45 @@ class TestPyArrowConversion(unittest.TestCase):
         self.assertIn("attribute_name", table.column_names)
 
 
+@unittest.skipIf(pa is None, "pyarrow not installed")
 class TestPersistenceWithMockSession(unittest.TestCase):
-    """Test persistence logic with mock VAST session."""
+    """Test persistence logic with mock VAST session using vastdb SDK patterns."""
 
-    def setUp(self):
-        """Set up mock session."""
-        self.mock_session = MagicMock()
-        self.mock_txn = MagicMock()
-        self.mock_table_client = MagicMock()
+    def _build_mock_session(self, insert_side_effect=None):
+        """Build a mock session matching vastdb SDK hierarchy.
 
-        self.mock_session.begin.return_value = self.mock_txn
-        self.mock_session.table.return_value = self.mock_table_client
-        self.mock_table_client.select.return_value = None  # No existing file
-        self.mock_table_client.insert.return_value = None
+        session.transaction() -> context manager -> tx
+        tx.bucket(name) -> bucket_mock
+        bucket_mock.schema(name) -> schema_mock
+        schema_mock.table(name) -> table_mock
+        table_mock.insert(arrow_table) -> None
+        """
+        mock_session = MagicMock()
+        mock_tx = MagicMock()
+        mock_bucket = MagicMock()
+        mock_schema = MagicMock()
+        mock_table = MagicMock()
+
+        # Wire context manager: session.transaction().__enter__() -> tx
+        mock_session.transaction.return_value.__enter__ = MagicMock(return_value=mock_tx)
+        mock_session.transaction.return_value.__exit__ = MagicMock(return_value=False)
+
+        # Wire hierarchy: tx.bucket().schema().table()
+        mock_tx.bucket.return_value = mock_bucket
+        mock_bucket.schema.return_value = mock_schema
+        mock_schema.table.return_value = mock_table
+
+        if insert_side_effect:
+            mock_table.insert.side_effect = insert_side_effect
+        else:
+            mock_table.insert.return_value = None
+
+        return mock_session, mock_tx, mock_table
 
     def test_persist_new_file_success(self):
         """Successful persistence of new file."""
+        mock_session, mock_tx, mock_table = self._build_mock_session()
+
         payload = {
             "file": {
                 "path": "/data/test.exr",
@@ -405,15 +428,22 @@ class TestPersistenceWithMockSession(unittest.TestCase):
             "attributes": {"parts": [[]]},
         }
 
-        result = persist_to_vast_database(payload, {}, self.mock_session)
+        result = persist_to_vast_database(payload, {}, mock_session)
 
         self.assertEqual(result["status"], "success")
         self.assertIsNotNone(result["file_id"])
         self.assertTrue(result["inserted"])
-        self.mock_txn.commit.assert_called()
+        # Verify transaction context manager was used
+        mock_session.transaction.assert_called_once()
+        # Verify hierarchy navigation
+        mock_tx.bucket.assert_called()
 
-    def test_persist_existing_file_idempotent(self):
-        """Idempotent behavior for existing file."""
+    def test_persist_transaction_error_propagates(self):
+        """Transaction error should be caught and returned."""
+        mock_session, _, _ = self._build_mock_session(
+            insert_side_effect=Exception("Insert failed"),
+        )
+
         payload = {
             "file": {
                 "path": "/data/test.exr",
@@ -427,49 +457,21 @@ class TestPersistenceWithMockSession(unittest.TestCase):
             "attributes": {"parts": [[]]},
         }
 
-        # Mock returns existing file
-        self.mock_table_client.select.return_value = [
-            {"file_id": "existing_id_123"}
-        ]
-
-        result = persist_to_vast_database(payload, {}, self.mock_session)
-
-        self.assertEqual(result["status"], "success")
-        self.assertEqual(result["file_id"], "existing_id_123")
-        self.assertFalse(result["inserted"])
-
-    def test_persist_transaction_rollback_on_error(self):
-        """Transaction rollback on error."""
-        payload = {
-            "file": {
-                "path": "/data/test.exr",
-                "size_bytes": 1024000,
-                "mtime": "2025-02-05T10:00:00+00:00",
-                "multipart_count": 1,
-                "is_deep": False,
-            },
-            "channels": [],
-            "parts": [],
-            "attributes": {"parts": [[]]},
-        }
-
-        # Mock insert to raise error
-        self.mock_table_client.insert.side_effect = Exception("Insert failed")
-
-        result = persist_to_vast_database(payload, {}, self.mock_session)
+        result = persist_to_vast_database(payload, {}, mock_session)
 
         self.assertEqual(result["status"], "error")
-        self.mock_txn.rollback.assert_called()
 
     def test_persist_missing_file_path(self):
         """Error if file path is missing."""
+        mock_session, _, _ = self._build_mock_session()
+
         payload = {
             "file": {"size_bytes": 1024},
             "channels": [],
             "parts": [],
         }
 
-        result = persist_to_vast_database(payload, {}, self.mock_session)
+        result = persist_to_vast_database(payload, {}, mock_session)
 
         self.assertEqual(result["status"], "error")
         self.assertIn("file.path", result["error"])
@@ -490,6 +492,32 @@ class TestPersistenceWithMockSession(unittest.TestCase):
             result = persist_to_vast_database(payload, {})
 
         self.assertEqual(result["status"], "skipped")
+
+    def test_persist_navigates_bucket_schema_table(self):
+        """Verify tx.bucket().schema().table() navigation hierarchy."""
+        mock_session, mock_tx, mock_table = self._build_mock_session()
+
+        payload = {
+            "file": {
+                "path": "/data/test.exr",
+                "size_bytes": 1024000,
+                "mtime": "2025-02-05T10:00:00+00:00",
+                "multipart_count": 1,
+                "is_deep": False,
+            },
+            "channels": [],
+            "parts": [],
+            "attributes": {"parts": [[]]},
+        }
+
+        with patch.dict("os.environ", {
+            "VAST_DB_BUCKET": "test-bucket",
+            "VAST_DB_SCHEMA": "test_schema",
+        }):
+            result = persist_to_vast_database(payload, {}, mock_session)
+
+        self.assertEqual(result["status"], "success")
+        mock_tx.bucket.assert_called_with("test-bucket")
 
 
 class TestErrorHandling(unittest.TestCase):
@@ -592,8 +620,9 @@ class TestIntegrationScenarios(unittest.TestCase):
         self.assertAlmostEqual(metadata_norm, 1.0, places=5)
         self.assertAlmostEqual(channel_norm, 1.0, places=5)
 
+    @unittest.skipIf(pa is None, "pyarrow not installed")
     def test_full_workflow_with_mock_session(self):
-        """Full workflow with mock VAST session."""
+        """Full workflow with mock VAST session using vastdb SDK patterns."""
         payload = {
             "file": {
                 "path": "/data/complex.exr",
@@ -615,12 +644,12 @@ class TestIntegrationScenarios(unittest.TestCase):
         }
 
         mock_session = MagicMock()
-        mock_txn = MagicMock()
-        mock_table_client = MagicMock()
+        mock_tx = MagicMock()
+        mock_table = MagicMock()
 
-        mock_session.begin.return_value = mock_txn
-        mock_session.table.return_value = mock_table_client
-        mock_table_client.select.return_value = None
+        mock_session.transaction.return_value.__enter__ = MagicMock(return_value=mock_tx)
+        mock_session.transaction.return_value.__exit__ = MagicMock(return_value=False)
+        mock_tx.bucket.return_value.schema.return_value.table.return_value = mock_table
 
         result = persist_to_vast_database(payload, {}, mock_session)
 

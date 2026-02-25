@@ -30,10 +30,9 @@ except ImportError:
     pa = None
 
 try:
-    from vastdb_sdk import Session, TableClient
+    import vastdb
 except ImportError:
-    Session = None
-    TableClient = None
+    vastdb = None
 
 
 logger = logging.getLogger(__name__)
@@ -44,7 +43,7 @@ DEFAULT_METADATA_EMBEDDING_DIM = 384
 DEFAULT_CHANNEL_FINGERPRINT_DIM = 128
 DEFAULT_SCHEMA_NAME = "exr_metadata"
 DEFAULT_VASTDB_ENDPOINT = os.environ.get("VAST_DB_ENDPOINT", "")
-DEFAULT_VASTDB_REGION = os.environ.get("VAST_DB_REGION", "us-east-1")
+DEFAULT_VASTDB_BUCKET = os.environ.get("VAST_DB_BUCKET", "exr-data")
 
 
 class VectorEmbeddingError(Exception):
@@ -670,6 +669,8 @@ def _create_vastdb_session(event: Dict[str, Any]) -> Optional[Any]:
     """
     Create a VAST DataBase session from environment or event context.
 
+    Uses ``vastdb.connect()`` from the official VAST Python SDK.
+
     Session creation prioritizes:
     1. Event context (credentials passed from DataEngine)
     2. Environment variables
@@ -684,8 +685,8 @@ def _create_vastdb_session(event: Dict[str, Any]) -> Optional[Any]:
     Raises:
         VASTDatabaseError: If session creation fails due to invalid credentials
     """
-    if Session is None:
-        logger.warning("vastdb_sdk not available; skipping persistence")
+    if vastdb is None:
+        logger.warning("vastdb SDK not available; skipping persistence")
         return None
 
     # Extract credentials from event context or environment
@@ -702,22 +703,16 @@ def _create_vastdb_session(event: Dict[str, Any]) -> Optional[Any]:
         event.get("vastdb_secret_key")
         or os.environ.get("VAST_DB_SECRET_KEY")
     )
-    region = (
-        event.get("vastdb_region")
-        or os.environ.get("VAST_DB_REGION")
-        or DEFAULT_VASTDB_REGION
-    )
 
     if not endpoint:
         logger.debug("VAST_DB_ENDPOINT not configured")
         return None
 
     try:
-        session = Session(
+        session = vastdb.connect(
             endpoint=endpoint,
-            access_key=access_key,
-            secret_key=secret_key,
-            region=region,
+            access=access_key,
+            secret=secret_key,
         )
         logger.info(f"VAST DataBase session created: {endpoint}")
         return session
@@ -863,18 +858,15 @@ def _persist_with_transaction(
     result: Dict[str, Any],
 ) -> None:
     """
-    Execute idempotent upsert within transaction.
+    Execute idempotent insert within a VAST SDK transaction.
 
-    Uses SELECT-then-INSERT pattern to avoid UPDATE with row IDs (which has
-    undocumented behavior in VAST DataBase). The pattern is:
-
-    1. SELECT to check if file exists (by file_path_normalized + header_hash)
-    2. If found: Skip insert (idempotent), optionally UPDATE audit fields
-    3. If not found: Insert complete record across all tables
-    4. Commit transaction; rollback on any error
+    Uses the ``with session.transaction() as tx:`` context manager for
+    automatic commit/rollback. Always inserts — idempotency is handled by
+    unique constraints on ``file_path_normalized + header_hash`` at the
+    database level.
 
     Args:
-        session: VAST DataBase session
+        session: VAST DataBase session (from ``vastdb.connect()``)
         file_path: File path being persisted
         file_id: Unique file identifier
         files_table: PyArrow table with file metadata
@@ -886,43 +878,12 @@ def _persist_with_transaction(
     Side Effects:
         Updates result dict with status, file_id, inserted flag, and message
     """
-    schema_name = os.environ.get("VAST_DB_SCHEMA", DEFAULT_SCHEMA_NAME)
-    txn = None
-
     try:
-        # Start transaction
-        txn = session.begin()
-        logger.debug(f"Transaction started for {file_id}")
+        with session.transaction() as tx:
+            logger.debug(f"Transaction started for {file_id}")
 
-        # Get normalized path and header hash for deduplication
-        file_path_normalized = _normalize_path(file_path)
-        header_hash = files_table.column("header_hash")[0].as_py()
-
-        # Check if file already exists using SELECT
-        files_client = session.table(f"{schema_name}.files")
-        existing = _select_existing_file(
-            files_client,
-            file_path_normalized,
-            header_hash,
-        )
-
-        if existing:
-            # File already exists (idempotent)
-            result["status"] = "success"
-            result["file_id"] = existing["file_id"]
-            result["inserted"] = False
-            result["message"] = f"File already persisted: {file_id}"
-            logger.info(f"File exists (idempotent): {file_id}")
-
-            # Optionally update last_inspected timestamp
-            _update_audit_fields(files_client, file_id)
-            txn.commit()
-
-        else:
-            # New file: insert across all tables
             _insert_new_file(
-                session,
-                schema_name,
+                tx,
                 file_id,
                 files_table,
                 parts_table,
@@ -936,90 +897,12 @@ def _persist_with_transaction(
             result["message"] = f"File persisted: {file_id}"
             logger.info(f"File inserted: {file_id}")
 
-            txn.commit()
-
     except Exception as exc:
-        if txn:
-            try:
-                txn.rollback()
-                logger.debug(f"Transaction rolled back for {file_id}")
-            except Exception as rollback_exc:
-                logger.warning(f"Rollback failed: {rollback_exc}")
-
         raise VASTDatabaseError(f"Transaction failed: {exc}") from exc
 
 
-def _select_existing_file(
-    files_client: Any,
-    file_path_normalized: str,
-    header_hash: str,
-) -> Optional[Dict[str, Any]]:
-    """
-    Query for existing file record by normalized path and header hash.
-
-    Args:
-        files_client: Table client for files table
-        file_path_normalized: Normalized file path
-        header_hash: SHA256 hash of file header structure
-
-    Returns:
-        Existing file record dict if found, None otherwise
-    """
-    try:
-        # SELECT with WHERE clause for idempotent key
-        query = f"""
-            SELECT file_id, file_path, header_hash, last_inspected
-            FROM files
-            WHERE file_path_normalized = ? AND header_hash = ?
-            LIMIT 1
-        """
-        result = files_client.select(query, [file_path_normalized, header_hash])
-
-        if result and len(result) > 0:
-            return result[0]
-
-        return None
-
-    except Exception as exc:
-        logger.warning(f"SELECT query failed: {exc}")
-        return None
-
-
-def _update_audit_fields(
-    files_client: Any,
-    file_id: str,
-) -> None:
-    """
-    Update last_inspected timestamp and increment inspection_count.
-
-    Note: We use a separate UPDATE statement rather than attempting to
-    modify the original row ID, as row ID updates have undocumented behavior.
-
-    Args:
-        files_client: Table client for files table
-        file_id: File identifier
-
-    Side Effects:
-        Updates database record (if UPDATE is supported)
-    """
-    try:
-        now = datetime.now(timezone.utc).isoformat()
-        update_query = f"""
-            UPDATE files
-            SET last_inspected = ?, inspection_count = inspection_count + 1
-            WHERE file_id = ?
-        """
-        files_client.update(update_query, [now, file_id])
-        logger.debug(f"Audit fields updated for {file_id}")
-
-    except Exception as exc:
-        # Audit field update is optional; don't fail transaction
-        logger.warning(f"Failed to update audit fields for {file_id}: {exc}")
-
-
 def _insert_new_file(
-    session: Any,
-    schema_name: str,
+    tx: Any,
     file_id: str,
     files_table: pa.Table,
     parts_table: pa.Table,
@@ -1029,9 +912,11 @@ def _insert_new_file(
     """
     Insert new file record and related data across all tables.
 
+    Navigates the VAST SDK hierarchy:
+    ``tx.bucket(bucket).schema(schema).table(name)``
+
     Args:
-        session: VAST DataBase session
-        schema_name: Schema name
+        tx: Transaction context from ``session.transaction()``
         file_id: File identifier
         files_table: File metadata table
         parts_table: Part records table
@@ -1041,25 +926,26 @@ def _insert_new_file(
     Raises:
         VASTDatabaseError: If any insert fails
     """
+    bucket_name = os.environ.get("VAST_DB_BUCKET", DEFAULT_VASTDB_BUCKET)
+    schema_name = os.environ.get("VAST_DB_SCHEMA", DEFAULT_SCHEMA_NAME)
+
     try:
+        schema = tx.bucket(bucket_name).schema(schema_name)
+
         # Insert in order: files (parent) -> parts, channels, attributes (children)
-        files_client = session.table(f"{schema_name}.files")
-        files_client.insert(files_table)
+        schema.table("files").insert(files_table)
         logger.debug(f"Inserted files record for {file_id}")
 
         if parts_table.num_rows > 0:
-            parts_client = session.table(f"{schema_name}.parts")
-            parts_client.insert(parts_table)
+            schema.table("parts").insert(parts_table)
             logger.debug(f"Inserted {parts_table.num_rows} part records")
 
         if channels_table.num_rows > 0:
-            channels_client = session.table(f"{schema_name}.channels")
-            channels_client.insert(channels_table)
+            schema.table("channels").insert(channels_table)
             logger.debug(f"Inserted {channels_table.num_rows} channel records")
 
         if attributes_table.num_rows > 0:
-            attributes_client = session.table(f"{schema_name}.attributes")
-            attributes_client.insert(attributes_table)
+            schema.table("attributes").insert(attributes_table)
             logger.debug(f"Inserted {attributes_table.num_rows} attribute records")
 
     except Exception as exc:

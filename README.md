@@ -81,9 +81,10 @@ docker tag sergio-exr-inspector:latest \
 docker push docker.selab.vastdata.com:5000/sergio.soto/exr-inspector:latest
 ```
 
-For the complete walkthrough (schema creation, VAST UI setup, triggers, verification):
+For step-by-step guides:
 - **[docs/DEPLOY.md](./docs/DEPLOY.md)** — Canonical deployment guide
 - **[docs/PROD_RUNBOOK.md](./docs/PROD_RUNBOOK.md)** — 5-phase production deployment
+- **[docs/QUICK_START_VAST.md](./docs/QUICK_START_VAST.md)** — 60-75 minute walkthrough
 - **[docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)** — 30+ common issues and solutions
 
 ---

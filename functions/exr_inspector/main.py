@@ -1,23 +1,39 @@
-"""VAST DataEngine handler for exr-inspector."""
+"""VAST DataEngine handler for exr-inspector.
+
+Triggered by S3 ElementCreated events on a VAST bucket. Downloads EXR files
+via boto3 using ctx.secrets, extracts metadata with OpenImageIO, and persists
+results to VAST DataBase.
+"""
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"
+
+logger = logging.getLogger(__name__)
 
 try:
     import OpenImageIO as oiio
 except ImportError:  # pragma: no cover - runtime dependency
     oiio = None
 
+try:
+    import boto3
+except ImportError:  # pragma: no cover - runtime dependency
+    boto3 = None
+
 from vast_db_persistence import persist_to_vast_database
+
+SUPPORTED_EXTENSIONS = {".exr"}
 
 
 @dataclass
@@ -30,51 +46,72 @@ class InspectorConfig:
     schema_version: int = 1
 
 
-def init(ctx: Any) -> None:
+def init(ctx):
     """Optional initialization hook for DataEngine runtime."""
-    _ = ctx
+    logger.info("exr-inspector %s initialized", __version__)
 
 
-def handler(ctx: Any, event: Dict[str, Any]) -> Dict[str, Any]:
-    """Primary DataEngine function handler."""
-    _ = ctx
+def handler(ctx, event):
+    """Primary DataEngine function handler.
+
+    Receives S3 ElementCreated CloudEvents from a VAST DataEngine trigger.
+    Downloads the EXR file from S3 via boto3 using ctx.secrets, inspects it
+    with OpenImageIO, and persists metadata to VAST DataBase.
+    """
+    logger.info("Event received: %s", json.dumps(event, default=str)[:500])
+
     config = _parse_config(event)
 
-    file_path = _extract_file_path(event)
-    if not file_path:
-        return _error_result("Missing file path in event payload")
+    s3_info = _extract_s3_info(event)
+    if s3_info is None:
+        return _error_result("Could not extract S3 object info from event")
 
-    result: Dict[str, Any] = {
-        "schema_version": config.schema_version,
-        "file": {},
-        "parts": [],
-        "channels": [],
-        "attributes": {},
-        "stats": {},
-        "validation": {},
-        "errors": [],
-    }
+    object_key = s3_info["object_key"]
+    if not _is_supported_extension(object_key):
+        return _error_result(f"Unsupported file extension: {object_key}")
 
-    if config.enable_meta:
-        result["file"] = _collect_file_info(file_path)
-        exr_meta = _inspect_exr(file_path)
-        result["file"].update(exr_meta.get("file", {}))
-        result["parts"] = exr_meta.get("parts", [])
-        result["channels"] = exr_meta.get("channels", [])
-        result["attributes"] = exr_meta.get("attributes", {})
-        result["errors"].extend(exr_meta.get("errors", []))
+    local_path = None
+    try:
+        local_path = _download_from_s3(ctx, s3_info)
 
-    if config.enable_stats:
-        result["stats"] = _stats_placeholder(config.enable_deep_stats)
+        result: Dict[str, Any] = {
+            "schema_version": config.schema_version,
+            "file": {},
+            "parts": [],
+            "channels": [],
+            "attributes": {},
+            "stats": {},
+            "validation": {},
+            "errors": [],
+            "s3": s3_info,
+        }
 
-    if config.enable_validate:
-        result["validation"] = _validation_placeholder()
+        if config.enable_meta:
+            result["file"] = _collect_file_info(local_path)
+            result["file"]["s3_key"] = object_key
+            result["file"]["s3_bucket"] = s3_info["bucket_name"]
+            exr_meta = _inspect_exr(local_path)
+            result["file"].update(exr_meta.get("file", {}))
+            result["parts"] = exr_meta.get("parts", [])
+            result["channels"] = exr_meta.get("channels", [])
+            result["attributes"] = exr_meta.get("attributes", {})
+            result["errors"].extend(exr_meta.get("errors", []))
 
-    # Persist to VAST DataBase with vector embeddings
-    persistence_result = persist_to_vast_database(result, event)
-    result["persistence"] = persistence_result
+        if config.enable_stats:
+            result["stats"] = _stats_placeholder(config.enable_deep_stats)
 
-    return result
+        if config.enable_validate:
+            result["validation"] = _validation_placeholder()
+
+        # Persist to VAST DataBase using ctx for credentials
+        persistence_result = persist_to_vast_database(result, event, ctx=ctx)
+        result["persistence"] = persistence_result
+
+        return result
+
+    finally:
+        if local_path and os.path.exists(local_path):
+            os.unlink(local_path)
 
 
 def _parse_config(event: Dict[str, Any]) -> InspectorConfig:
@@ -89,13 +126,100 @@ def _parse_config(event: Dict[str, Any]) -> InspectorConfig:
     )
 
 
-def _extract_file_path(event: Dict[str, Any]) -> Optional[str]:
-    data = event.get("data", {}) if isinstance(event, dict) else {}
-    for key in ("path", "file", "file_path"):
-        value = data.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return None
+def _extract_s3_info(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract S3 object info from a DataEngine ElementCreated CloudEvent.
+
+    VAST DataEngine element triggers emit CloudEvents wrapping S3 notification
+    records (Admin Guide p.200). The S3 record is at:
+        event["data"]["Records"][0]["s3"]
+
+    If the event does not contain a CloudEvent "data" wrapper, we also try
+    the top-level "Records" key as a fallback.
+    """
+    if not isinstance(event, dict):
+        return None
+
+    # CloudEvent: payload is inside event["data"]["Records"]
+    data = event.get("data", event)
+    records = data.get("Records", [])
+    if not records:
+        # Fallback: try top-level Records (in case runtime unwraps envelope)
+        records = event.get("Records", [])
+    if not records:
+        logger.error("No Records found in event payload")
+        return None
+
+    if len(records) > 1:
+        logger.warning("Event contains %d records; processing first only", len(records))
+
+    record = records[0]
+    s3_data = record.get("s3", {})
+    obj_info = s3_data.get("object", {})
+    bucket_info = s3_data.get("bucket", {})
+
+    object_key = obj_info.get("key", "").strip()
+    if not object_key:
+        logger.error("Empty S3 object key in event")
+        return None
+
+    return {
+        "bucket_name": bucket_info.get("name", ""),
+        "object_key": object_key,
+        "object_size": obj_info.get("size"),
+        "etag": obj_info.get("eTag"),
+        "event_name": record.get("eventName", ""),
+        "event_time": record.get("eventTime", ""),
+    }
+
+
+def _is_supported_extension(object_key: str) -> bool:
+    """Check if the S3 object key has a supported file extension."""
+    ext = os.path.splitext(object_key)[1].lower()
+    return ext in SUPPORTED_EXTENSIONS
+
+
+def _download_from_s3(ctx: Any, s3_info: Dict[str, Any]) -> str:
+    """Download S3 object to local ephemeral storage using ctx.secrets.
+
+    DataEngine functions access S3 credentials through ctx.secrets
+    (User Guide p.27). The secret name defaults to 'vast_s3' but can be
+    overridden via the VAST_S3_SECRET_NAME environment variable.
+    """
+    if boto3 is None:
+        raise RuntimeError("boto3 is required for S3 access but not installed")
+
+    secret_name = os.environ.get("VAST_S3_SECRET_NAME", "vast_s3")
+    try:
+        secrets = ctx.secrets[secret_name]
+        endpoint = secrets["endpoint"]
+        access_key = secrets["access_key"]
+        secret_key = secrets["secret_key"]
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f"Missing S3 credentials in ctx.secrets['{secret_name}']: {exc}"
+        ) from exc
+
+    s3_client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+    )
+
+    suffix = os.path.splitext(s3_info["object_key"])[1]
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        logger.info(
+            "Downloading s3://%s/%s to %s",
+            s3_info["bucket_name"], s3_info["object_key"], tmp.name,
+        )
+        s3_client.download_file(
+            s3_info["bucket_name"], s3_info["object_key"], tmp.name,
+        )
+        return tmp.name
+    except Exception:
+        os.unlink(tmp.name)
+        raise
 
 
 def _collect_file_info(path: str) -> Dict[str, Any]:
@@ -178,6 +302,8 @@ def _inspect_exr(path: str) -> Dict[str, Any]:
 def _spec_to_part(spec: Any, index: int) -> Dict[str, Any]:
     part: Dict[str, Any] = {
         "part_index": index,
+        "width": spec.width,
+        "height": spec.height,
         "part_name": _get_attr(spec, "name"),
         "view_name": _get_attr(spec, "view"),
         "multi_view": _get_attr(spec, "multiView"),
@@ -197,9 +323,11 @@ def _spec_to_part(spec: Any, index: int) -> Dict[str, Any]:
 
 def _spec_to_channels(spec: Any, part_index: int) -> List[Dict[str, Any]]:
     channel_formats = spec.channelformats or []
+    x_samples = spec.x_channel_samples or []
+    y_samples = spec.y_channel_samples or []
     channels: List[Dict[str, Any]] = []
     for idx, name in enumerate(spec.channelnames):
-        if channel_formats:
+        if channel_formats and idx < len(channel_formats):
             data_type = _type_desc_to_str(channel_formats[idx])
         else:
             data_type = _type_desc_to_str(spec.format)
@@ -208,8 +336,8 @@ def _spec_to_channels(spec: Any, part_index: int) -> List[Dict[str, Any]]:
                 "part_index": part_index,
                 "name": name,
                 "type": data_type,
-                "x_sampling": spec.x_channel_samples[idx],
-                "y_sampling": spec.y_channel_samples[idx],
+                "x_sampling": x_samples[idx] if idx < len(x_samples) else 1,
+                "y_sampling": y_samples[idx] if idx < len(y_samples) else 1,
             }
         )
     return channels
@@ -237,9 +365,9 @@ def _get_attr(spec: Any, name: str) -> Any:
 
 def _type_desc_to_str(type_desc: Any) -> str:
     try:
-        return str(type_desc)
+        return str(type_desc).upper()
     except Exception:
-        return "unknown"
+        return "UNKNOWN"
 
 
 def _serialize_value(value: Any) -> Any:

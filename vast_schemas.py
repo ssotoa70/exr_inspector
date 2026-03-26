@@ -97,7 +97,7 @@ from typing import Dict, List
 # =============================================================================
 
 SCHEMA_VERSION = "1.0.0"
-VECTOR_DIMENSION_METADATA = 512  # Metadata embedding dimension
+VECTOR_DIMENSION_METADATA = 384  # Metadata embedding dimension (must match DEFAULT_METADATA_EMBEDDING_DIM)
 VECTOR_DIMENSION_CHANNEL = 128   # Channel fingerprint dimension
 
 

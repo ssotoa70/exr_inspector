@@ -283,7 +283,7 @@ CREATE TABLE IF NOT EXISTS exr_metadata.files (
     multipart_count INT DEFAULT 1,
     is_deep BOOLEAN DEFAULT FALSE,
     is_tiled BOOLEAN DEFAULT FALSE,
-    metadata_embedding FLOAT VECTOR(384),
+    metadata_embedding FLOAT VECTOR(384),  -- must match DEFAULT_METADATA_EMBEDDING_DIM
     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_inspected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     inspection_count INT DEFAULT 1,
@@ -298,6 +298,8 @@ CREATE TABLE IF NOT EXISTS exr_metadata.parts (
     part_id STRING PRIMARY KEY,
     file_id STRING NOT NULL,
     part_index INT,
+    width INT,
+    height INT,
     part_name STRING,
     view_name STRING,
     data_window STRING,
@@ -420,11 +422,20 @@ phase3_deploy_function() {
   "description": "EXR file inspection with VAST DataBase persistence",
   "image": "$REGISTRY_URL/$IMAGE_REPOSITORY:$IMAGE_TAG",
   "environmentVariables": {
-    "VAST_DB_ENDPOINT": "$VAST_DB_ENDPOINT",
-    "VAST_DB_ACCESS_KEY": "$VAST_DB_ACCESS_KEY",
-    "VAST_DB_SECRET_KEY": "$VAST_DB_SECRET_KEY",
     "VAST_DB_REGION": "$VAST_DB_REGION",
     "VAST_DB_SCHEMA": "$VAST_DB_SCHEMA"
+  },
+  "secrets": {
+    "vast_s3": {
+      "endpoint": "$VAST_DB_ENDPOINT",
+      "access_key": "$VAST_DB_ACCESS_KEY",
+      "secret_key": "$VAST_DB_SECRET_KEY"
+    },
+    "vast_db": {
+      "endpoint": "$VAST_DB_ENDPOINT",
+      "access_key": "$VAST_DB_ACCESS_KEY",
+      "secret_key": "$VAST_DB_SECRET_KEY"
+    }
   },
   "timeout": 300,
   "memorySize": 1024

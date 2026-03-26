@@ -665,19 +665,22 @@ def _normalize_path(path: str) -> str:
 # ============================================================================
 
 
-def _create_vastdb_session(event: Dict[str, Any]) -> Optional[Any]:
+def _create_vastdb_session(
+    ctx: Optional[Any] = None,
+    event: Optional[Dict[str, Any]] = None,
+) -> Optional[Any]:
     """
-    Create a VAST DataBase session from environment or event context.
+    Create a VAST DataBase session from ctx.secrets or environment.
 
     Uses ``vastdb.connect()`` from the official VAST Python SDK.
 
     Session creation prioritizes:
-    1. Event context (credentials passed from DataEngine)
-    2. Environment variables
-    3. Default configuration
+    1. ctx.secrets (DataEngine runtime - production path)
+    2. Environment variables (local development / testing fallback)
 
     Args:
-        event: DataEngine event context that may contain VAST credentials
+        ctx: DataEngine runtime context with secrets access
+        event: DataEngine event (unused, kept for backward compat)
 
     Returns:
         Session object if successful, None if not configured
@@ -689,20 +692,29 @@ def _create_vastdb_session(event: Dict[str, Any]) -> Optional[Any]:
         logger.warning("vastdb SDK not available; skipping persistence")
         return None
 
-    # Extract credentials from event context or environment
-    endpoint = (
-        event.get("vastdb_endpoint")
-        or os.environ.get("VAST_DB_ENDPOINT")
-        or DEFAULT_VASTDB_ENDPOINT
-    )
-    access_key = (
-        event.get("vastdb_access_key")
-        or os.environ.get("VAST_DB_ACCESS_KEY")
-    )
-    secret_key = (
-        event.get("vastdb_secret_key")
-        or os.environ.get("VAST_DB_SECRET_KEY")
-    )
+    endpoint = None
+    access_key = None
+    secret_key = None
+
+    # Primary: ctx.secrets (production DataEngine path)
+    secret_name = os.environ.get("VAST_DB_SECRET_NAME", "vast_db")
+    if ctx is not None:
+        try:
+            secrets = ctx.secrets[secret_name]
+            endpoint = secrets.get("endpoint")
+            access_key = secrets.get("access_key")
+            secret_key = secrets.get("secret_key")
+            logger.debug("Credentials loaded from ctx.secrets['%s']", secret_name)
+        except (AttributeError, KeyError, TypeError):
+            logger.debug("ctx.secrets['%s'] not available, falling back to env", secret_name)
+
+    # Fallback: environment variables (local dev / testing)
+    if not endpoint:
+        endpoint = os.environ.get("VAST_DB_ENDPOINT") or DEFAULT_VASTDB_ENDPOINT
+    if not access_key:
+        access_key = os.environ.get("VAST_DB_ACCESS_KEY")
+    if not secret_key:
+        secret_key = os.environ.get("VAST_DB_SECRET_KEY")
 
     if not endpoint:
         logger.debug("VAST_DB_ENDPOINT not configured")
@@ -714,7 +726,7 @@ def _create_vastdb_session(event: Dict[str, Any]) -> Optional[Any]:
             access=access_key,
             secret=secret_key,
         )
-        logger.info(f"VAST DataBase session created: {endpoint}")
+        logger.info("VAST DataBase session created: %s", endpoint)
         return session
 
     except Exception as exc:
@@ -730,7 +742,8 @@ def _create_vastdb_session(event: Dict[str, Any]) -> Optional[Any]:
 
 def persist_to_vast_database(
     payload: Dict[str, Any],
-    event: Dict[str, Any],
+    event: Optional[Dict[str, Any]] = None,
+    ctx: Optional[Any] = None,
     vastdb_session: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
@@ -739,18 +752,17 @@ def persist_to_vast_database(
     This is the main entry point for VAST DataBase persistence. It orchestrates
     the complete flow:
 
-    1. Create/validate VAST DataBase session
+    1. Create/validate VAST DataBase session (via ctx.secrets or env vars)
     2. Compute vector embeddings
     3. Convert payload to PyArrow tables
     4. Start transaction
-    5. Check existence (SELECT) by file_path_normalized + header_hash
-    6. If new: INSERT all related records (files, parts, channels, attributes)
-    7. If exists: SKIP INSERT (idempotent) or UPDATE audit fields
-    8. Commit transaction with error handling
+    5. INSERT all related records (files, parts, channels, attributes)
+    6. Commit transaction with error handling
 
     Args:
         payload: Complete exr-inspector JSON output from handler()
-        event: DataEngine event context (may contain VAST credentials)
+        event: DataEngine event (optional, for backward compat)
+        ctx: DataEngine runtime context with secrets access (production)
         vastdb_session: Optional pre-created session (for testing)
 
     Returns:
@@ -760,16 +772,6 @@ def persist_to_vast_database(
             - inserted: bool indicating if new record was inserted
             - message: Human-readable status message
             - error: Error message (if status == "error")
-
-    Example:
-        >>> payload = {
-        ...     "file": {"path": "/data/test.exr", ...},
-        ...     "channels": [...],
-        ...     ...
-        ... }
-        >>> result = persist_to_vast_database(payload, event)
-        >>> if result["status"] == "success":
-        ...     print(f"File ID: {result['file_id']}")
     """
     result: Dict[str, Any] = {
         "status": "error",
@@ -791,7 +793,7 @@ def persist_to_vast_database(
 
     try:
         # Create or use provided session
-        session = vastdb_session or _create_vastdb_session(event)
+        session = vastdb_session or _create_vastdb_session(ctx=ctx, event=event)
         if session is None:
             result["status"] = "skipped"
             result["message"] = "VAST DataBase not configured"

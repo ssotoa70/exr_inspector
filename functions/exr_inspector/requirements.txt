@@ -3,6 +3,9 @@
 # OpenImageIO is provided by the system package libopenimageio-dev (see Aptfile).
 # The Python bindings are included in that package and do NOT need a pip install.
 #
+# S3 access for downloading EXR files from VAST bucket:
+boto3>=1.28.0
+
 # VAST DataBase persistence dependencies:
 pyarrow>=10.0.0
 vastdb>=1.3.9

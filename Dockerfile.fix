@@ -1,0 +1,2 @@
+FROM exr-inspector:latest
+ENV LD_LIBRARY_PATH="/layers/paketo-buildpacks_cpython/cpython/lib:/layers/apt-buildpack/apt/lib/x86_64-linux-gnu:/layers/apt-buildpack/apt/usr/lib/x86_64-linux-gnu"

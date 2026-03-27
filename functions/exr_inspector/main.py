@@ -1,25 +1,26 @@
 """VAST DataEngine handler for exr-inspector.
 
-Triggered by S3 ElementCreated events on a VAST bucket. Downloads EXR files
-via boto3 using ctx.secrets, extracts metadata with OpenImageIO, and persists
-results to VAST DataBase.
+Triggered by Element.ObjectCreated events on a VAST S3 bucket. Downloads EXR
+files via boto3 (S3 credentials from environment variables), extracts metadata
+with OpenImageIO, and persists results to VAST DataBase.
+
+Event flow:
+  ElementTrigger -> VastEvent with elementpath -> bucket/object_key
+  S3 credentials -> environment variables (S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY)
+  S3 client -> initialized once in init(), reused for all requests
 """
 
 from __future__ import annotations
 
 import base64
 import json
-import logging
 import os
 import tempfile
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-__version__ = "1.0.0"
-
-logger = logging.getLogger(__name__)
+__version__ = "1.1.0"
 
 try:
     import OpenImageIO as oiio
@@ -28,54 +29,120 @@ except ImportError:  # pragma: no cover - runtime dependency
 
 try:
     import boto3
+    from botocore.exceptions import ClientError
 except ImportError:  # pragma: no cover - runtime dependency
     boto3 = None
+    ClientError = Exception
 
 from vast_db_persistence import persist_to_vast_database
 
 SUPPORTED_EXTENSIONS = {".exr"}
 
-
-@dataclass
-class InspectorConfig:
-    enable_meta: bool = True
-    enable_stats: bool = False
-    enable_deep_stats: bool = False
-    enable_validate: bool = False
-    policy_path: Optional[str] = None
-    schema_version: int = 1
+# Global S3 client — initialized once in init(), reused for all requests
+s3_client = None
 
 
 def init(ctx):
-    """Optional initialization hook for DataEngine runtime."""
-    logger.info("exr-inspector %s initialized", __version__)
+    """One-time initialization when the function container starts.
+
+    Sets up the S3 client with credentials from environment variables
+    (set via pipeline config). This client is reused for all requests.
+    """
+    global s3_client
+
+    ctx.logger.info("=" * 80)
+    ctx.logger.info("INITIALIZING EXR-INSPECTOR %s", __version__)
+    ctx.logger.info("=" * 80)
+
+    s3_endpoint = os.environ.get("S3_ENDPOINT", "")
+    s3_access_key = os.environ.get("S3_ACCESS_KEY", "")
+    s3_secret_key = os.environ.get("S3_SECRET_KEY", "")
+
+    ctx.logger.info("S3_ENDPOINT: %s", s3_endpoint or "(NOT SET)")
+    ctx.logger.info("S3_ACCESS_KEY: %s...%s (len=%d)",
+                     s3_access_key[:4], s3_access_key[-4:] if len(s3_access_key) > 8 else "***",
+                     len(s3_access_key))
+
+    if not s3_endpoint or not s3_access_key or not s3_secret_key:
+        ctx.logger.warning("S3 credentials incomplete - S3 operations will fail")
+
+    if boto3 is not None:
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=s3_endpoint,
+            aws_access_key_id=s3_access_key,
+            aws_secret_access_key=s3_secret_key,
+        )
+        ctx.logger.info("S3 client created successfully")
+    else:
+        ctx.logger.error("boto3 not available")
+
+    ctx.logger.info("OpenImageIO: %s", "available" if oiio else "NOT AVAILABLE")
+    ctx.logger.info("EXR-INSPECTOR initialized successfully")
+    ctx.logger.info("=" * 80)
 
 
 def handler(ctx, event):
     """Primary DataEngine function handler.
 
-    Receives S3 ElementCreated CloudEvents from a VAST DataEngine trigger.
-    Downloads the EXR file from S3 via boto3 using ctx.secrets, inspects it
-    with OpenImageIO, and persists metadata to VAST DataBase.
+    Receives VastEvent objects from DataEngine element triggers.
+    For Element events, extracts bucket/key from the elementpath extension.
+    Downloads the EXR file via the global S3 client, inspects it with
+    OpenImageIO, and persists metadata to VAST DataBase.
+
+    Args:
+        ctx: VAST function context with logger
+        event: VastEvent object (ElementTriggerVastEvent, etc.)
     """
-    logger.info("Event received: %s", json.dumps(event, default=str)[:500])
+    ctx.logger.info("=" * 80)
+    ctx.logger.info("Processing new EXR inspection request")
 
-    config = _parse_config(event)
+    # Log event metadata
+    ctx.logger.info("Event ID: %s", event.id)
+    ctx.logger.info("Event Type: %s", event.type)
+    ctx.logger.info("Event Subtype: %s", event.subtype if event.subtype else "None")
 
-    s3_info = _extract_s3_info(event)
-    if s3_info is None:
-        return _error_result("Could not extract S3 object info from event")
+    # Extract file location from event
+    s3_bucket = None
+    s3_key = None
 
-    object_key = s3_info["object_key"]
-    if not _is_supported_extension(object_key):
-        return _error_result(f"Unsupported file extension: {object_key}")
+    if event.type == "Element":
+        try:
+            element_event = event.as_element_event()
+            s3_bucket = element_event.bucket
+            s3_key = element_event.object_key
 
+            ctx.logger.info("Element event - Trigger: %s, ID: %s",
+                            event.trigger, event.trigger_id)
+            ctx.logger.info("Element path: %s",
+                            element_event.extensions.get("elementpath"))
+            ctx.logger.info("Bucket: %s, Key: %s", s3_bucket, s3_key)
+        except Exception as exc:
+            ctx.logger.warning("Failed to extract Element properties: %s", exc)
+
+    # Fallback: check data payload
+    if not s3_bucket or not s3_key:
+        event_data = event.get_data() if hasattr(event, "get_data") else {}
+        ctx.logger.info("Using data payload: %s", json.dumps(event_data, indent=2))
+        s3_bucket = event_data.get("s3_bucket")
+        s3_key = event_data.get("s3_key")
+
+    if not s3_bucket or not s3_key:
+        ctx.logger.error("Missing S3 bucket/key in event")
+        return _error_result("Missing S3 bucket/key - cannot locate EXR file")
+
+    # Validate extension
+    if not _is_supported_extension(s3_key):
+        ctx.logger.info("Skipping non-EXR file: %s", s3_key)
+        return _error_result(f"Unsupported file extension: {s3_key}")
+
+    # Download from S3
     local_path = None
     try:
-        local_path = _download_from_s3(ctx, s3_info)
+        local_path = _download_from_s3(ctx, s3_bucket, s3_key)
 
         result: Dict[str, Any] = {
-            "schema_version": config.schema_version,
+            "schema_version": 1,
             "file": {},
             "parts": [],
             "channels": [],
@@ -83,93 +150,43 @@ def handler(ctx, event):
             "stats": {},
             "validation": {},
             "errors": [],
-            "s3": s3_info,
         }
 
-        if config.enable_meta:
-            result["file"] = _collect_file_info(local_path)
-            result["file"]["s3_key"] = object_key
-            result["file"]["s3_bucket"] = s3_info["bucket_name"]
-            exr_meta = _inspect_exr(local_path)
-            result["file"].update(exr_meta.get("file", {}))
-            result["parts"] = exr_meta.get("parts", [])
-            result["channels"] = exr_meta.get("channels", [])
-            result["attributes"] = exr_meta.get("attributes", {})
-            result["errors"].extend(exr_meta.get("errors", []))
+        # Collect file info and inspect EXR
+        result["file"] = _collect_file_info(local_path)
+        result["file"]["s3_key"] = s3_key
+        result["file"]["s3_bucket"] = s3_bucket
 
-        if config.enable_stats:
-            result["stats"] = _stats_placeholder(config.enable_deep_stats)
+        exr_meta = _inspect_exr(local_path)
+        result["file"].update(exr_meta.get("file", {}))
+        result["parts"] = exr_meta.get("parts", [])
+        result["channels"] = exr_meta.get("channels", [])
+        result["attributes"] = exr_meta.get("attributes", {})
+        result["errors"].extend(exr_meta.get("errors", []))
 
-        if config.enable_validate:
-            result["validation"] = _validation_placeholder()
-
-        # Persist to VAST DataBase using ctx for credentials
-        persistence_result = persist_to_vast_database(result, event, ctx=ctx)
+        # Persist to VAST DataBase
+        persistence_result = persist_to_vast_database(result, ctx=ctx)
         result["persistence"] = persistence_result
 
+        ctx.logger.info("=" * 80)
+        ctx.logger.info("EXR INSPECTION RESULTS:")
+        ctx.logger.info("  File: s3://%s/%s", s3_bucket, s3_key)
+        ctx.logger.info("  Parts: %d", len(result["parts"]))
+        ctx.logger.info("  Channels: %d", len(result["channels"]))
+        ctx.logger.info("  Errors: %d", len(result["errors"]))
+        ctx.logger.info("  Persistence: %s", result.get("persistence", {}).get("status"))
+        ctx.logger.info("=" * 80)
+
         return result
+
+    except Exception as exc:
+        ctx.logger.error("EXR inspection failed: %s", exc)
+        ctx.logger.exception(exc)
+        return _error_result(f"Inspection failed: {exc}")
 
     finally:
         if local_path and os.path.exists(local_path):
             os.unlink(local_path)
-
-
-def _parse_config(event: Dict[str, Any]) -> InspectorConfig:
-    data = event.get("data", {}) if isinstance(event, dict) else {}
-    return InspectorConfig(
-        enable_meta=_coerce_bool(data.get("meta", True)),
-        enable_stats=_coerce_bool(data.get("stats", False)),
-        enable_deep_stats=_coerce_bool(data.get("deep_stats", False)),
-        enable_validate=_coerce_bool(data.get("validate", False)),
-        policy_path=data.get("policy_path"),
-        schema_version=int(data.get("schema_version", 1)),
-    )
-
-
-def _extract_s3_info(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Extract S3 object info from a DataEngine ElementCreated CloudEvent.
-
-    VAST DataEngine element triggers emit CloudEvents wrapping S3 notification
-    records (Admin Guide p.200). The S3 record is at:
-        event["data"]["Records"][0]["s3"]
-
-    If the event does not contain a CloudEvent "data" wrapper, we also try
-    the top-level "Records" key as a fallback.
-    """
-    if not isinstance(event, dict):
-        return None
-
-    # CloudEvent: payload is inside event["data"]["Records"]
-    data = event.get("data", event)
-    records = data.get("Records", [])
-    if not records:
-        # Fallback: try top-level Records (in case runtime unwraps envelope)
-        records = event.get("Records", [])
-    if not records:
-        logger.error("No Records found in event payload")
-        return None
-
-    if len(records) > 1:
-        logger.warning("Event contains %d records; processing first only", len(records))
-
-    record = records[0]
-    s3_data = record.get("s3", {})
-    obj_info = s3_data.get("object", {})
-    bucket_info = s3_data.get("bucket", {})
-
-    object_key = obj_info.get("key", "").strip()
-    if not object_key:
-        logger.error("Empty S3 object key in event")
-        return None
-
-    return {
-        "bucket_name": bucket_info.get("name", ""),
-        "object_key": object_key,
-        "object_size": obj_info.get("size"),
-        "etag": obj_info.get("eTag"),
-        "event_name": record.get("eventName", ""),
-        "event_time": record.get("eventTime", ""),
-    }
 
 
 def _is_supported_extension(object_key: str) -> bool:
@@ -178,44 +195,22 @@ def _is_supported_extension(object_key: str) -> bool:
     return ext in SUPPORTED_EXTENSIONS
 
 
-def _download_from_s3(ctx: Any, s3_info: Dict[str, Any]) -> str:
-    """Download S3 object to local ephemeral storage using ctx.secrets.
+def _download_from_s3(ctx: Any, bucket: str, key: str) -> str:
+    """Download S3 object to local ephemeral storage using the global s3_client.
 
-    DataEngine functions access S3 credentials through ctx.secrets
-    (User Guide p.27). The secret name defaults to 'vast_s3' but can be
-    overridden via the VAST_S3_SECRET_NAME environment variable.
+    The S3 client is initialized once in init() with credentials from
+    environment variables (S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY).
     """
-    if boto3 is None:
-        raise RuntimeError("boto3 is required for S3 access but not installed")
+    if s3_client is None:
+        raise RuntimeError("S3 client not initialized - check init() and env vars")
 
-    secret_name = os.environ.get("VAST_S3_SECRET_NAME", "vast_s3")
-    try:
-        secrets = ctx.secrets[secret_name]
-        endpoint = secrets["endpoint"]
-        access_key = secrets["access_key"]
-        secret_key = secrets["secret_key"]
-    except (AttributeError, KeyError, TypeError) as exc:
-        raise RuntimeError(
-            f"Missing S3 credentials in ctx.secrets['{secret_name}']: {exc}"
-        ) from exc
-
-    s3_client = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-    )
-
-    suffix = os.path.splitext(s3_info["object_key"])[1]
+    suffix = os.path.splitext(key)[1]
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     try:
-        logger.info(
-            "Downloading s3://%s/%s to %s",
-            s3_info["bucket_name"], s3_info["object_key"], tmp.name,
-        )
-        s3_client.download_file(
-            s3_info["bucket_name"], s3_info["object_key"], tmp.name,
-        )
+        ctx.logger.info("Downloading s3://%s/%s to %s", bucket, key, tmp.name)
+        s3_client.download_file(bucket, key, tmp.name)
+        file_size = os.path.getsize(tmp.name)
+        ctx.logger.info("Downloaded %d bytes", file_size)
         return tmp.name
     except Exception:
         os.unlink(tmp.name)
@@ -431,32 +426,12 @@ def _serialize_oiio_type(value: Any) -> Optional[Any]:
     return None
 
 
-def _stats_placeholder(enable_deep_stats: bool) -> Dict[str, Any]:
-    if enable_deep_stats:
-        return {"status": "skipped", "reason": "deep stats not implemented"}
-    return {"status": "skipped", "reason": "stats not implemented"}
-
-
-def _validation_placeholder() -> Dict[str, Any]:
-    return {"status": "skipped", "reason": "validation not implemented"}
-
 
 
 
 def _isoformat(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
-
-def _coerce_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return False
 
 
 def _error_result(message: str) -> Dict[str, Any]:

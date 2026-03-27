@@ -697,7 +697,7 @@ def _create_vastdb_session(
     secret_key = None
 
     # Primary: ctx.secrets (production DataEngine path)
-    secret_name = os.environ.get("VAST_DB_SECRET_NAME", "vast_db")
+    secret_name = os.environ.get("VAST_DB_SECRET_NAME", "vast-db")
     if ctx is not None:
         try:
             secrets = ctx.secrets[secret_name]
@@ -708,13 +708,16 @@ def _create_vastdb_session(
         except (AttributeError, KeyError, TypeError):
             logger.debug("ctx.secrets['%s'] not available, falling back to env", secret_name)
 
-    # Fallback: environment variables (local dev / testing)
+    # Fallback: environment variables
+    # VAST_DB_ENDPOINT takes priority; falls back to S3_ENDPOINT (same VIP on many clusters)
     if not endpoint:
-        endpoint = os.environ.get("VAST_DB_ENDPOINT") or DEFAULT_VASTDB_ENDPOINT
+        endpoint = (os.environ.get("VAST_DB_ENDPOINT")
+                    or os.environ.get("S3_ENDPOINT")
+                    or DEFAULT_VASTDB_ENDPOINT)
     if not access_key:
-        access_key = os.environ.get("VAST_DB_ACCESS_KEY")
+        access_key = os.environ.get("VAST_DB_ACCESS_KEY") or os.environ.get("S3_ACCESS_KEY")
     if not secret_key:
-        secret_key = os.environ.get("VAST_DB_SECRET_KEY")
+        secret_key = os.environ.get("VAST_DB_SECRET_KEY") or os.environ.get("S3_SECRET_KEY")
 
     if not endpoint:
         logger.debug("VAST_DB_ENDPOINT not configured")
@@ -800,6 +803,9 @@ def persist_to_vast_database(
             logger.debug(f"VAST persistence skipped for {file_path}")
             return result
 
+        # Ensure schema and tables exist (DDL in separate transaction)
+        ensure_database_tables(session)
+
         # Compute vector embeddings
         logger.debug(f"Computing embeddings for {file_path}")
         metadata_embedding = compute_metadata_embedding(payload)
@@ -849,6 +855,143 @@ def persist_to_vast_database(
     return result
 
 
+# ============================================================================
+# Database Auto-Provisioning (get-or-create pattern)
+# ============================================================================
+#
+# VAST vastdb SDK: create_schema/create_table are NOT idempotent — they throw
+# if the resource already exists. We use try/except to handle this safely.
+# Per VAST Admin Guide p.623, the pattern is:
+#   bucket.create_schema(name) -> schema
+#   schema.create_table(name, pyarrow_schema) -> table
+# Vector columns use: pa.list_(pa.field("item", pa.float32(), nullable=False), dim)
+#
+# The bucket (database) must pre-exist — it cannot be created via the SDK.
+# DDL (create schema/table) runs in a separate transaction from DML (inserts).
+
+# Table schemas for auto-creation (must match the schemas used in payload_to_*_rows)
+_FILES_TABLE_SCHEMA = pa.schema([
+    ("file_id", pa.string()),
+    ("file_path", pa.string()),
+    ("file_path_normalized", pa.string()),
+    ("header_hash", pa.string()),
+    ("size_bytes", pa.int64()),
+    ("mtime", pa.string()),
+    ("multipart_count", pa.int32()),
+    ("is_deep", pa.bool_()),
+    ("metadata_embedding", pa.list_(
+        pa.field(name="item", type=pa.float32(), nullable=False),
+        DEFAULT_METADATA_EMBEDDING_DIM,
+    )),
+    ("inspection_timestamp", pa.string()),
+    ("inspection_count", pa.int32()),
+    ("last_inspected", pa.string()),
+])
+
+_PARTS_TABLE_SCHEMA = pa.schema([
+    ("file_id", pa.string()),
+    ("file_path", pa.string()),
+    ("part_index", pa.int32()),
+    ("part_name", pa.string()),
+    ("view_name", pa.string()),
+    ("multi_view", pa.bool_()),
+    ("data_window", pa.string()),
+    ("display_window", pa.string()),
+    ("pixel_aspect_ratio", pa.float32()),
+    ("line_order", pa.string()),
+    ("compression", pa.string()),
+    ("is_tiled", pa.bool_()),
+    ("tile_width", pa.int32()),
+    ("tile_height", pa.int32()),
+    ("tile_depth", pa.int32()),
+    ("is_deep", pa.bool_()),
+])
+
+_CHANNELS_TABLE_SCHEMA = pa.schema([
+    ("file_id", pa.string()),
+    ("file_path", pa.string()),
+    ("part_index", pa.int32()),
+    ("channel_name", pa.string()),
+    ("channel_type", pa.string()),
+    ("x_sampling", pa.int32()),
+    ("y_sampling", pa.int32()),
+    ("channel_fingerprint", pa.list_(
+        pa.field(name="item", type=pa.float32(), nullable=False),
+        DEFAULT_CHANNEL_FINGERPRINT_DIM,
+    )),
+])
+
+_ATTRIBUTES_TABLE_SCHEMA = pa.schema([
+    ("file_id", pa.string()),
+    ("file_path", pa.string()),
+    ("part_index", pa.int32()),
+    ("attr_name", pa.string()),
+    ("attr_type", pa.string()),
+    ("value_json", pa.string()),
+    ("value_text", pa.string()),
+    ("value_int", pa.int64()),
+    ("value_float", pa.float64()),
+])
+
+_TABLE_DEFINITIONS = {
+    "files": _FILES_TABLE_SCHEMA,
+    "parts": _PARTS_TABLE_SCHEMA,
+    "channels": _CHANNELS_TABLE_SCHEMA,
+    "attributes": _ATTRIBUTES_TABLE_SCHEMA,
+}
+
+
+def _get_or_create_schema(bucket, schema_name: str):
+    """Get existing schema or create it. Handles race conditions."""
+    try:
+        return bucket.schema(schema_name)
+    except Exception:
+        pass
+    try:
+        logger.info("Creating schema: %s", schema_name)
+        return bucket.create_schema(schema_name)
+    except Exception as exc:
+        logger.warning("create_schema race condition (%s), retrying get", exc)
+        return bucket.schema(schema_name)
+
+
+def _get_or_create_table(schema, table_name: str, arrow_schema: pa.Schema):
+    """Get existing table or create it. Handles race conditions."""
+    try:
+        return schema.table(table_name)
+    except Exception:
+        pass
+    try:
+        logger.info("Creating table: %s", table_name)
+        return schema.create_table(table_name, arrow_schema)
+    except Exception as exc:
+        logger.warning("create_table race condition (%s), retrying get", exc)
+        return schema.table(table_name)
+
+
+def ensure_database_tables(session) -> None:
+    """Ensure all required schema and tables exist in VAST DataBase.
+
+    Safe to call on every invocation. Uses get-or-create pattern since
+    vastdb create_schema/create_table are not idempotent.
+
+    The bucket (database) must already exist as a Database-enabled view.
+    DDL runs in its own transaction, separate from data inserts.
+    """
+    bucket_name = os.environ.get("VAST_DB_BUCKET", DEFAULT_VASTDB_BUCKET)
+    schema_name = os.environ.get("VAST_DB_SCHEMA", DEFAULT_SCHEMA_NAME)
+
+    with session.transaction() as tx:
+        bucket = tx.bucket(bucket_name)
+        schema = _get_or_create_schema(bucket, schema_name)
+
+        for table_name, arrow_schema in _TABLE_DEFINITIONS.items():
+            _get_or_create_table(schema, table_name, arrow_schema)
+
+    logger.info("Database tables verified: %s/%s [%s]",
+                bucket_name, schema_name, ", ".join(_TABLE_DEFINITIONS.keys()))
+
+
 def _persist_with_transaction(
     session: Any,
     file_path: str,
@@ -859,26 +1002,10 @@ def _persist_with_transaction(
     attributes_table: pa.Table,
     result: Dict[str, Any],
 ) -> None:
-    """
-    Execute idempotent insert within a VAST SDK transaction.
+    """Execute insert within a VAST SDK transaction.
 
-    Uses the ``with session.transaction() as tx:`` context manager for
-    automatic commit/rollback. Always inserts — idempotency is handled by
-    unique constraints on ``file_path_normalized + header_hash`` at the
-    database level.
-
-    Args:
-        session: VAST DataBase session (from ``vastdb.connect()``)
-        file_path: File path being persisted
-        file_id: Unique file identifier
-        files_table: PyArrow table with file metadata
-        parts_table: PyArrow table with part records
-        channels_table: PyArrow table with channel records
-        attributes_table: PyArrow table with attribute records
-        result: Result dict to populate with status
-
-    Side Effects:
-        Updates result dict with status, file_id, inserted flag, and message
+    DDL (table creation) is handled separately by ensure_database_tables().
+    This function only does DML (inserts).
     """
     try:
         with session.transaction() as tx:

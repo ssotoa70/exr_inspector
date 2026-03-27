@@ -5,3 +5,6 @@ secrets*.yaml
 pipeline.yaml
 localrun-config.yaml
 *.log
+.archive/
+build.log
+.vast-build-cache/

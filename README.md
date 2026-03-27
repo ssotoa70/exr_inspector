@@ -1,231 +1,92 @@
 # exr-inspector
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ssotoa70/exr_inspector/blob/main/LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.9.0-blue.svg)](https://github.com/ssotoa70/exr_inspector/releases/tag/v0.9.0)
-[![Python](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-45+-brightgreen.svg)](./functions/exr_inspector/test_vast_db_persistence.py)
-[![Status](https://img.shields.io/badge/status-Release%20Candidate-orange.svg)](#status)
+[![Python](https://img.shields.io/badge/python-3.12-green.svg)](https://www.python.org/downloads/)
+[![VAST DataEngine](https://img.shields.io/badge/VAST-DataEngine-blue.svg)](https://www.vastdata.com/)
 
-**Authoritative OpenEXR introspection, validation, and analysis for high-end VFX and animation pipelines.**
+**Serverless EXR metadata extraction for VAST DataEngine.**
 
-exr-inspector is a serverless Python function for **VAST DataEngine** that provides lossless EXR metadata extraction, deterministic vector embeddings, and transactional persistence to VAST DataBase. Built for studio-grade environments (Pixar/DreamWorks class).
+exr-inspector is a VAST DataEngine function that automatically extracts metadata, channels (AOVs), and header attributes from OpenEXR files as they are ingested into a VAST S3 bucket. Results are persisted to VAST DataBase with deterministic vector embeddings for similarity search.
 
 ---
 
-## Quick Start
+## How It Works
 
-```bash
-# 1. Clone and install
-git clone https://github.com/ssotoa70/exr_inspector.git
-cd exr_inspector
-pip install -r functions/exr_inspector/requirements.txt
-
-# 2. Install system libraries (macOS / Ubuntu)
-brew install openimageio openexr          # macOS
-# sudo apt-get install libopenimageio-dev libopenexr-dev  # Ubuntu
-
-# 3. Run tests (no VAST cluster required)
-pytest functions/exr_inspector/test_vast_db_persistence.py -v
-
-# 4. Build container image (see docs/DEPLOY.md for full guide)
-brew install buildpacks/tap/pack          # one time
-docker pull docker.selab.vastdata.com:5000/vast-builder:latest
-pack build sergio-exr-inspector:latest \
-  --builder "docker.selab.vastdata.com:5000/vast-builder:latest" \
-  --path functions/exr_inspector \
-  --trust-builder --env "APP_HANDLER=main.py"
-
-# 5. Tag and push to registry
-docker tag sergio-exr-inspector:latest \
-  docker.selab.vastdata.com:5000/sergio.soto/exr-inspector:latest
-docker push docker.selab.vastdata.com:5000/sergio.soto/exr-inspector:latest
+```
+EXR file uploaded to S3 bucket
+  --> VAST DataEngine ElementCreated trigger (.exr suffix filter)
+    --> exr-inspector function container
+      --> Downloads EXR via boto3 from VAST S3
+      --> Parses headers with OpenImageIO (no pixel data read)
+      --> Computes deterministic vector embeddings
+      --> Persists to 4 VAST DataBase tables (auto-created)
+      --> Returns structured JSON result
 ```
 
-> **Note**: The `vastde functions build` command has a known Docker API version
-> bug in v5.4.x dev builds. Use `pack` directly as shown above.
-> See [docs/DEPLOY.md](./docs/DEPLOY.md) for full details and troubleshooting.
+## What It Extracts
 
----
-
-## Installation & Deployment
-
-### Build & Deploy
-
-The function image is built using [Cloud Native Buildpacks](https://buildpacks.io/) with the VAST builder image. Two options:
-
-**Option A — `vastde` CLI** (may fail on Docker Desktop 4.34+, see [Known Issues](./docs/DEPLOY.md#known-issues)):
-
-```bash
-vastde functions build exr-inspector \
-  -t ~/dataengine/exr_inspector/functions/exr_inspector \
-  -T sergio-exr-inspector
-```
-
-**Option B — `pack` CLI** (recommended workaround):
-
-```bash
-brew install buildpacks/tap/pack
-docker pull docker.selab.vastdata.com:5000/vast-builder:latest
-
-pack build sergio-exr-inspector:latest \
-  --builder "docker.selab.vastdata.com:5000/vast-builder:latest" \
-  --path functions/exr_inspector \
-  --trust-builder --env "APP_HANDLER=main.py"
-```
-
-Then tag and push:
-
-```bash
-docker tag sergio-exr-inspector:latest \
-  docker.selab.vastdata.com:5000/sergio.soto/exr-inspector:latest
-docker push docker.selab.vastdata.com:5000/sergio.soto/exr-inspector:latest
-```
-
-For step-by-step guides:
-- **[docs/DEPLOY.md](./docs/DEPLOY.md)** — Canonical deployment guide
-- **[docs/PROD_RUNBOOK.md](./docs/PROD_RUNBOOK.md)** — 5-phase production deployment
-- **[docs/QUICK_START_VAST.md](./docs/QUICK_START_VAST.md)** — 60-75 minute walkthrough
-- **[docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)** — 30+ common issues and solutions
-
----
-
-## Features
-
-- **Complete Header Metadata Extraction** — Lossless parsing of all EXR attributes, color spaces, and channel definitions
-- **Multipart & Deep EXR Support** — Robust navigation through complex EXR structures via OpenImageIO
-- **Type-Safe Serialization** — Handles exotic OIIO types (vectors, matrices, boxes, binary blobs) to JSON
-- **Streaming-Ready Architecture** — Never loads full pixel data; reads headers only
-- **Event-Driven Serverless** — Runs on VAST DataEngine with zero infrastructure management
-- **VAST DataBase Persistence** — Transactional writes with idempotent upserts via the `vastdb` Python SDK
-- **Vector Embeddings** — 384D metadata vectors and 128D channel fingerprints for AI/ML workflows
-- **Comprehensive Testing** — 45+ unit tests with full coverage
-
-### Planned (v1.1+)
-
-- Pixel Statistics — Streaming per-channel min/max/mean/stddev/NaN/Inf counts
-- Validation Engine — Policy-driven structural and metadata validation
-- Deep EXR Analytics — Sample-level analysis for deep EXRs
-
----
-
-## Configuration
-
-### Environment Variables
-
-```bash
-VAST_DB_ENDPOINT=https://your-vast-instance.example.com
-VAST_DB_ACCESS_KEY=<your-api-key>
-VAST_DB_SECRET_KEY=<your-secret-key>
-VAST_DB_BUCKET=exr-data        # Optional; defaults to 'exr-data'
-VAST_DB_SCHEMA=exr_metadata    # Optional; defaults to 'exr_metadata'
-```
-
-### Event Payload Options
-
-```python
-InspectorConfig:
-  enable_meta: bool = True          # Extract metadata (default enabled)
-  enable_stats: bool = False        # Pixel statistics (v1.1)
-  enable_validate: bool = False     # Validation rules (v1.2)
-  schema_version: int = 1           # Output schema version
-```
-
----
+| Scope | Fields |
+|-------|--------|
+| **File** | Part count, deep flag, file size, modification time |
+| **Parts** | Width, height, compression, tiling, data/display windows, pixel aspect ratio, line order |
+| **Channels** | Name (AOV layer), type (HALF/FLOAT/UINT), x/y sampling rates |
+| **Attributes** | All EXR header attributes: chromaticities, color space, owner, software, frame rate, timecode, camera matrices, etc. |
 
 ## Project Structure
 
 ```
-git/
-├── README.md                                # This file
-├── deploy.sh                                # Automated deployment script
-├── .env.example                             # Configuration template
-├── docs/
-│   ├── DEV_RUNBOOK.md                       # Local development guide
-│   ├── PROD_RUNBOOK.md                      # Production deployment guide
-│   ├── QUICK_START_VAST.md                  # Step-by-step deployment
-│   ├── TROUBLESHOOTING.md                   # 30+ common issues
-│   ├── VECTOR_STRATEGY.md                   # Vector embedding algorithms
-│   ├── VAST_ANALYTICS_QUERIES.md            # SQL query examples
-│   └── ...
-└── functions/
-    └── exr_inspector/
-        ├── main.py                          # Primary handler
-        ├── vast_db_persistence.py           # VAST DataBase persistence module
-        ├── test_vast_db_persistence.py      # Comprehensive tests (45+)
-        ├── requirements.txt                 # Python dependencies
-        └── Aptfile                          # System library dependencies
+functions/exr_inspector/
+  main.py                  # DataEngine handler (init + handler)
+  vast_db_persistence.py   # VAST DataBase persistence + auto-provisioning
+  requirements.txt         # Python dependencies (boto3, pyarrow, vastdb)
+  Aptfile                  # System packages (libopenimageio-dev, libopenexr-dev)
+Dockerfile.fix             # LD_LIBRARY_PATH fix for CNB buildpack images
+deploy.sh                  # Automated deployment script
+docs/
+  DEPLOYMENT.md            # Build, deploy, and configure guide
+  DATABASE_SCHEMA.md       # Table schemas, Trino queries, vector search
+  ARCHITECTURE.md          # Handler flow, event model, design decisions
+  CONFIGURATION.md         # Environment variables reference
+  TROUBLESHOOTING.md       # Common issues and solutions
 ```
 
----
-
-## VAST DataBase Integration
-
-exr-inspector persists extracted metadata to **VAST DataBase** using the `vastdb` Python SDK with transactional context managers:
-
-```python
-session = vastdb.connect(endpoint=..., access=..., secret=...)
-with session.transaction() as tx:
-    table = tx.bucket("exr-data").schema("exr_metadata").table("files")
-    table.insert(arrow_table)
-```
-
-### Database Schema
-
-| Table | Purpose |
-|-------|---------|
-| **files** | Root records with file path, size, mtime, and 384D metadata embeddings |
-| **parts** | Multipart EXR structures (index, name, dimensions, tile info, compression) |
-| **channels** | Channel definitions (name, type, sampling rates) with 128D fingerprints |
-| **attributes** | Key-value EXR attributes with type information |
-
-See **[VECTOR_STRATEGY.md](./docs/VECTOR_STRATEGY.md)** for schema details and **[VAST_ANALYTICS_QUERIES.md](./docs/VAST_ANALYTICS_QUERIES.md)** for query examples.
-
----
-
-## Development
-
-### Local Testing
+## Quick Start
 
 ```bash
-# Set up virtual environment
-python3 -m venv .venv && source .venv/bin/activate
+# Clone
+git clone https://github.com/ssotoa70/exr_inspector.git
+cd exr_inspector
+
+# Install dependencies (local development)
 pip install -r functions/exr_inspector/requirements.txt
 
-# Run all tests (no VAST cluster needed)
+# Run tests (no VAST cluster required)
 pytest functions/exr_inspector/test_vast_db_persistence.py -v
+
+# Build container image
+vastde functions build exr-inspector --target functions/exr_inspector --pull-policy never
+
+# See docs/DEPLOYMENT.md for full deployment guide
 ```
 
-See **[docs/DEV_RUNBOOK.md](./docs/DEV_RUNBOOK.md)** for the full local development workflow.
+## Documentation
 
----
+| Document | Description |
+|----------|-------------|
+| [Deployment Guide](docs/DEPLOYMENT.md) | Build, push, create function, configure pipeline |
+| [Database Schema](docs/DATABASE_SCHEMA.md) | Table definitions, Trino queries, vector search |
+| [Architecture](docs/ARCHITECTURE.md) | Event flow, handler design, persistence patterns |
+| [Configuration](docs/CONFIGURATION.md) | Environment variables and secrets reference |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and solutions |
 
-## Architecture
+## Requirements
 
-```
-EXR File → OpenImageIO Reader → Header/Attributes/Channels → Schema Normalizer → JSON Output + DB Write
-```
-
-- **Stateless handler** receives events from VAST DataEngine triggers
-- **Streaming**: never loads full pixel data — headers only
-- **Defensive**: graceful error handling, returns errors in JSON, never crashes
-- **Type-safe serialization**: handles all OIIO types (binary blobs, vectors, matrices, boxes)
-
----
-
-## Status / Open Items
-
-- **Current Version**: v0.9.0 (Release Candidate)
-- **Production Ready**: Yes (with known feature limitations documented)
-
-Open items for v1.1+:
-1. Pixel Statistics (streaming per-channel analysis)
-2. Validation Engine (policy-driven rules)
-3. Deep EXR Handling (sample-level analytics)
-4. Policy DSL (YAML vs JSON format)
-5. Advanced Analytics (EXR diffing, hashing)
-
----
+- **VAST Cluster** 5.4+ with DataEngine enabled
+- **vastde CLI** v5.4.1+
+- **Docker** with `min-api-version: "1.38"` (see [Troubleshooting](docs/TROUBLESHOOTING.md))
+- **Python** 3.12 (container runtime)
+- **S3 bucket** with DataEngine element trigger configured
 
 ## License
 
-See repository for licensing information.
+[MIT](LICENSE)

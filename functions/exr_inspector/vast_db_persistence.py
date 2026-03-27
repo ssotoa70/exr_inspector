@@ -43,7 +43,7 @@ DEFAULT_METADATA_EMBEDDING_DIM = 384
 DEFAULT_CHANNEL_FINGERPRINT_DIM = 128
 DEFAULT_SCHEMA_NAME = "exr_metadata"
 DEFAULT_VASTDB_ENDPOINT = os.environ.get("VAST_DB_ENDPOINT", "")
-DEFAULT_VASTDB_BUCKET = os.environ.get("VAST_DB_BUCKET", "sergio.soto-bucket")
+DEFAULT_VASTDB_BUCKET = os.environ.get("VAST_DB_BUCKET", "exr-data")
 
 
 class VectorEmbeddingError(Exception):

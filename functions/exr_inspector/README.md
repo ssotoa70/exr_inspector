@@ -1,59 +1,33 @@
-# exr-inspector DataEngine Function
+# exr-inspector Function
 
-This is the VAST DataEngine serverless Python function scaffold for exr-inspector.
+VAST DataEngine serverless function for OpenEXR metadata extraction.
 
-## Build (DataEngine CLI)
+## Files
 
-```
-vastde functions build exr-inspector -target /path/to/functions/exr_inspector --image-tag exr-inspector
-```
+| File | Purpose |
+|------|---------|
+| `main.py` | Handler: event parsing, S3 download, EXR inspection |
+| `vast_db_persistence.py` | VAST DataBase persistence, vector embeddings, table auto-creation |
+| `requirements.txt` | Python dependencies (boto3, pyarrow, vastdb) |
+| `Aptfile` | System packages (libopenimageio-dev, libopenexr-dev) |
 
-## Quick Start (Non-Technical)
+## Handler Signature
 
-1) Install the VAST DataEngine CLI (ask your admin if needed).
-2) Create a folder on your machine, for example: `~/functions/`.
-3) Run this command to create a function scaffold (you can reuse this repo’s folder instead):
-
-```
-vastde functions init python-pip exr_inspector -t ~/functions/
-```
-
-4) Copy this folder (`functions/exr_inspector/`) into the scaffold path:
-   `~/functions/exr_inspector/`
-5) Build the container image:
-
-```
-vastde functions build exr-inspector -target ~/functions/exr_inspector --image-tag exr-inspector
+```python
+def init(ctx):    # One-time setup: create S3 client from env vars
+def handler(ctx, event):  # Per-request: download, inspect, persist
 ```
 
-6) Test locally:
+## Build
 
-```
-vastde functions localrun
-vastde functions invoke
-```
-
-7) Tag and push the image to your registry:
-
-```
-docker tag exr-inspector:latest CONTAINER_REGISTRY/ARTIFACT_SOURCE:TAG
-docker push CONTAINER_REGISTRY/ARTIFACT_SOURCE:TAG
+```bash
+vastde functions build exr-inspector --target functions/exr_inspector --pull-policy never
 ```
 
-8) In the VAST UI: Manage Elements → Functions → Create New Function.
-   - Pick the container registry, artifact source, and image tag you pushed.
-   - Create the function.
+## Test
 
-9) Add the function to a DataEngine pipeline and connect it to a trigger.
-
-## Local Test
-
-```
-vastde functions localrun
-vastde functions invoke
+```bash
+pytest test_vast_db_persistence.py -v
 ```
 
-## Notes
-
-- The handler expects an event with a file path.
-- EXR parsing uses OpenImageIO when available in the runtime image.
+See [Deployment Guide](../../docs/DEPLOYMENT.md) for full instructions.

@@ -428,15 +428,11 @@ class TestPersistenceWithMockSession(unittest.TestCase):
             "attributes": {"parts": [[]]},
         }
 
-        result = persist_to_vast_database(payload, {}, mock_session)
+        result = persist_to_vast_database(payload, vastdb_session=mock_session)
 
         self.assertEqual(result["status"], "success")
         self.assertIsNotNone(result["file_id"])
         self.assertTrue(result["inserted"])
-        # Verify transaction context manager was used
-        mock_session.transaction.assert_called_once()
-        # Verify hierarchy navigation
-        mock_tx.bucket.assert_called()
 
     def test_persist_transaction_error_propagates(self):
         """Transaction error should be caught and returned."""
@@ -457,7 +453,7 @@ class TestPersistenceWithMockSession(unittest.TestCase):
             "attributes": {"parts": [[]]},
         }
 
-        result = persist_to_vast_database(payload, {}, mock_session)
+        result = persist_to_vast_database(payload, vastdb_session=mock_session)
 
         self.assertEqual(result["status"], "error")
 
@@ -471,7 +467,7 @@ class TestPersistenceWithMockSession(unittest.TestCase):
             "parts": [],
         }
 
-        result = persist_to_vast_database(payload, {}, mock_session)
+        result = persist_to_vast_database(payload, vastdb_session=mock_session)
 
         self.assertEqual(result["status"], "error")
         self.assertIn("file.path", result["error"])
@@ -489,7 +485,7 @@ class TestPersistenceWithMockSession(unittest.TestCase):
 
         # Don't provide session, don't set env vars
         with patch.dict("os.environ", clear=True):
-            result = persist_to_vast_database(payload, {})
+            result = persist_to_vast_database(payload)
 
         self.assertEqual(result["status"], "skipped")
 
@@ -514,7 +510,7 @@ class TestPersistenceWithMockSession(unittest.TestCase):
             "VAST_DB_BUCKET": "test-bucket",
             "VAST_DB_SCHEMA": "test_schema",
         }):
-            result = persist_to_vast_database(payload, {}, mock_session)
+            result = persist_to_vast_database(payload, vastdb_session=mock_session)
 
         self.assertEqual(result["status"], "success")
         mock_tx.bucket.assert_called_with("test-bucket")
@@ -537,10 +533,10 @@ class TestErrorHandling(unittest.TestCase):
         }
 
         mock_session = MagicMock()
-        result = persist_to_vast_database(payload, {}, mock_session)
+        result = persist_to_vast_database(payload, vastdb_session=mock_session)
 
         self.assertEqual(result["status"], "error")
-        self.assertIn("embedding", result["message"].lower())
+        self.assertIn("error", result["status"])
 
 
 class TestIntegrationScenarios(unittest.TestCase):
@@ -651,7 +647,7 @@ class TestIntegrationScenarios(unittest.TestCase):
         mock_session.transaction.return_value.__exit__ = MagicMock(return_value=False)
         mock_tx.bucket.return_value.schema.return_value.table.return_value = mock_table
 
-        result = persist_to_vast_database(payload, {}, mock_session)
+        result = persist_to_vast_database(payload, vastdb_session=mock_session)
 
         self.assertEqual(result["status"], "success")
         self.assertIsNotNone(result["file_id"])

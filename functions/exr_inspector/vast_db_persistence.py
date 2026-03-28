@@ -383,6 +383,7 @@ def payload_to_files_row(
         ("multipart_count", pa.int32()),
         ("is_deep", pa.bool_()),
         ("metadata_embedding", pa.list_(pa.float32())),
+        ("frame_number", pa.int32()),
         ("inspection_timestamp", pa.string()),
         ("inspection_count", pa.int32()),
         ("last_inspected", pa.string()),
@@ -398,6 +399,7 @@ def payload_to_files_row(
         "multipart_count": [file_info.get("multipart_count", 0)],
         "is_deep": [file_info.get("is_deep", False)],
         "metadata_embedding": [metadata_embedding],
+        "frame_number": [file_info.get("frame_number")],
         "inspection_timestamp": [now],
         "inspection_count": [1],
         "last_inspected": [now],
@@ -438,14 +440,22 @@ def payload_to_parts_rows(
         ("file_id", pa.string()),
         ("file_path", pa.string()),
         ("part_index", pa.int32()),
+        ("width", pa.int32()),
+        ("height", pa.int32()),
+        ("display_width", pa.int32()),
+        ("display_height", pa.int32()),
+        ("data_x_offset", pa.int32()),
+        ("data_y_offset", pa.int32()),
         ("part_name", pa.string()),
         ("view_name", pa.string()),
         ("multi_view", pa.bool_()),
-        ("data_window", pa.string()),  # JSON serialized
-        ("display_window", pa.string()),  # JSON serialized
+        ("data_window", pa.string()),
+        ("display_window", pa.string()),
         ("pixel_aspect_ratio", pa.float32()),
         ("line_order", pa.string()),
         ("compression", pa.string()),
+        ("color_space", pa.string()),
+        ("render_software", pa.string()),
         ("is_tiled", pa.bool_()),
         ("tile_width", pa.int32()),
         ("tile_height", pa.int32()),
@@ -457,6 +467,12 @@ def payload_to_parts_rows(
         "file_id": [],
         "file_path": [],
         "part_index": [],
+        "width": [],
+        "height": [],
+        "display_width": [],
+        "display_height": [],
+        "data_x_offset": [],
+        "data_y_offset": [],
         "part_name": [],
         "view_name": [],
         "multi_view": [],
@@ -465,6 +481,8 @@ def payload_to_parts_rows(
         "pixel_aspect_ratio": [],
         "line_order": [],
         "compression": [],
+        "color_space": [],
+        "render_software": [],
         "is_tiled": [],
         "tile_width": [],
         "tile_height": [],
@@ -476,6 +494,12 @@ def payload_to_parts_rows(
         data["file_id"].append(file_id)
         data["file_path"].append(file_path)
         data["part_index"].append(part.get("part_index", 0))
+        data["width"].append(part.get("width", 0))
+        data["height"].append(part.get("height", 0))
+        data["display_width"].append(part.get("display_width", 0))
+        data["display_height"].append(part.get("display_height", 0))
+        data["data_x_offset"].append(part.get("data_x_offset", 0))
+        data["data_y_offset"].append(part.get("data_y_offset", 0))
         data["part_name"].append(part.get("part_name"))
         data["view_name"].append(part.get("view_name"))
         data["multi_view"].append(bool(part.get("multi_view")))
@@ -486,6 +510,8 @@ def payload_to_parts_rows(
         )
         data["line_order"].append(part.get("line_order"))
         data["compression"].append(part.get("compression"))
+        data["color_space"].append(part.get("color_space"))
+        data["render_software"].append(part.get("render_software"))
         data["is_tiled"].append(bool(part.get("is_tiled")))
         data["tile_width"].append(part.get("tile_width") or 0)
         data["tile_height"].append(part.get("tile_height") or 0)
@@ -530,6 +556,8 @@ def payload_to_channels_rows(
         ("file_path", pa.string()),
         ("part_index", pa.int32()),
         ("channel_name", pa.string()),
+        ("layer_name", pa.string()),
+        ("component_name", pa.string()),
         ("channel_type", pa.string()),
         ("x_sampling", pa.int32()),
         ("y_sampling", pa.int32()),
@@ -541,6 +569,8 @@ def payload_to_channels_rows(
         "file_path": [],
         "part_index": [],
         "channel_name": [],
+        "layer_name": [],
+        "component_name": [],
         "channel_type": [],
         "x_sampling": [],
         "y_sampling": [],
@@ -552,6 +582,8 @@ def payload_to_channels_rows(
         data["file_path"].append(file_path)
         data["part_index"].append(channel.get("part_index", 0))
         data["channel_name"].append(channel.get("name", ""))
+        data["layer_name"].append(channel.get("layer_name", ""))
+        data["component_name"].append(channel.get("component_name", ""))
         data["channel_type"].append(channel.get("type", ""))
         data["x_sampling"].append(channel.get("x_sampling", 1))
         data["y_sampling"].append(channel.get("y_sampling", 1))
@@ -883,6 +915,7 @@ _FILES_TABLE_SCHEMA = pa.schema([
         pa.field(name="item", type=pa.float32(), nullable=False),
         DEFAULT_METADATA_EMBEDDING_DIM,
     )),
+    ("frame_number", pa.int32()),
     ("inspection_timestamp", pa.string()),
     ("inspection_count", pa.int32()),
     ("last_inspected", pa.string()),
@@ -892,6 +925,12 @@ _PARTS_TABLE_SCHEMA = pa.schema([
     ("file_id", pa.string()),
     ("file_path", pa.string()),
     ("part_index", pa.int32()),
+    ("width", pa.int32()),
+    ("height", pa.int32()),
+    ("display_width", pa.int32()),
+    ("display_height", pa.int32()),
+    ("data_x_offset", pa.int32()),
+    ("data_y_offset", pa.int32()),
     ("part_name", pa.string()),
     ("view_name", pa.string()),
     ("multi_view", pa.bool_()),
@@ -900,6 +939,8 @@ _PARTS_TABLE_SCHEMA = pa.schema([
     ("pixel_aspect_ratio", pa.float32()),
     ("line_order", pa.string()),
     ("compression", pa.string()),
+    ("color_space", pa.string()),
+    ("render_software", pa.string()),
     ("is_tiled", pa.bool_()),
     ("tile_width", pa.int32()),
     ("tile_height", pa.int32()),
@@ -912,6 +953,8 @@ _CHANNELS_TABLE_SCHEMA = pa.schema([
     ("file_path", pa.string()),
     ("part_index", pa.int32()),
     ("channel_name", pa.string()),
+    ("layer_name", pa.string()),
+    ("component_name", pa.string()),
     ("channel_type", pa.string()),
     ("x_sampling", pa.int32()),
     ("y_sampling", pa.int32()),

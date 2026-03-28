@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -156,6 +157,7 @@ def handler(ctx, event):
         result["file"] = _collect_file_info(local_path)
         result["file"]["s3_key"] = s3_key
         result["file"]["s3_bucket"] = s3_bucket
+        result["file"]["frame_number"] = _parse_frame_number(s3_key)
 
         exr_meta = _inspect_exr(local_path)
         result["file"].update(exr_meta.get("file", {}))
@@ -187,6 +189,17 @@ def handler(ctx, event):
     finally:
         if local_path and os.path.exists(local_path):
             os.unlink(local_path)
+
+
+_FRAME_NUMBER_RE = re.compile(r'\.(\d{3,8})\.exr$', re.IGNORECASE)
+
+
+def _parse_frame_number(s3_key: str) -> Optional[int]:
+    """Extract frame number from filename pattern like beauty.0001.exr."""
+    match = _FRAME_NUMBER_RE.search(s3_key)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def _is_supported_extension(object_key: str) -> bool:
@@ -295,18 +308,32 @@ def _inspect_exr(path: str) -> Dict[str, Any]:
 
 
 def _spec_to_part(spec: Any, index: int) -> Dict[str, Any]:
+    # Extract raw windows for JSON serialization
+    data_window_raw = _get_attr(spec, "dataWindow")
+    display_window_raw = _get_attr(spec, "displayWindow")
+
+    # Compute derived integer dimensions from windows
+    dw = _extract_window_ints(data_window_raw)
+    disp = _extract_window_ints(display_window_raw)
+
     part: Dict[str, Any] = {
         "part_index": index,
         "width": spec.width,
         "height": spec.height,
+        "display_width": (disp["max_x"] - disp["min_x"] + 1) if disp else spec.width,
+        "display_height": (disp["max_y"] - disp["min_y"] + 1) if disp else spec.height,
+        "data_x_offset": dw["min_x"] if dw else 0,
+        "data_y_offset": dw["min_y"] if dw else 0,
         "part_name": _get_attr(spec, "name"),
         "view_name": _get_attr(spec, "view"),
         "multi_view": _get_attr(spec, "multiView"),
-        "data_window": _serialize_value(_get_attr(spec, "dataWindow")),
-        "display_window": _serialize_value(_get_attr(spec, "displayWindow")),
+        "data_window": _serialize_value(data_window_raw),
+        "display_window": _serialize_value(display_window_raw),
         "pixel_aspect_ratio": _get_attr(spec, "pixelAspectRatio"),
         "line_order": _get_attr(spec, "lineOrder"),
         "compression": _get_attr(spec, "compression"),
+        "color_space": _get_attr(spec, "oiio:ColorSpace") or _get_attr(spec, "colorspace"),
+        "render_software": _get_attr(spec, "software"),
         "is_tiled": bool(spec.tile_width),
         "tile_width": spec.tile_width or None,
         "tile_height": spec.tile_height or None,
@@ -314,6 +341,34 @@ def _spec_to_part(spec: Any, index: int) -> Dict[str, Any]:
         "is_deep": bool(spec.deep),
     }
     return {key: value for key, value in part.items() if value is not None}
+
+
+def _extract_window_ints(window: Any) -> Optional[Dict[str, int]]:
+    """Extract integer coordinates from an OIIO window/box object."""
+    if window is None:
+        return None
+    try:
+        # OIIO Box2i has .min and .max with .x and .y
+        if hasattr(window, "min") and hasattr(window, "max"):
+            return {
+                "min_x": int(window.min.x) if hasattr(window.min, "x") else int(window.min[0]),
+                "min_y": int(window.min.y) if hasattr(window.min, "y") else int(window.min[1]),
+                "max_x": int(window.max.x) if hasattr(window.max, "x") else int(window.max[0]),
+                "max_y": int(window.max.y) if hasattr(window.max, "y") else int(window.max[1]),
+            }
+        # Serialized dict format {"min": {"x": 0, "y": 0}, "max": {...}}
+        if isinstance(window, dict):
+            mn = window.get("min", {})
+            mx = window.get("max", {})
+            return {
+                "min_x": int(mn.get("x", 0)),
+                "min_y": int(mn.get("y", 0)),
+                "max_x": int(mx.get("x", 0)),
+                "max_y": int(mx.get("y", 0)),
+            }
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return None
 
 
 def _spec_to_channels(spec: Any, part_index: int) -> List[Dict[str, Any]]:
@@ -326,10 +381,20 @@ def _spec_to_channels(spec: Any, part_index: int) -> List[Dict[str, Any]]:
             data_type = _type_desc_to_str(channel_formats[idx])
         else:
             data_type = _type_desc_to_str(spec.format)
+        # Split channel name into layer and component (e.g., "beauty.R" -> "beauty", "R")
+        if "." in name:
+            layer_name = name.rsplit(".", 1)[0]
+            component_name = name.rsplit(".", 1)[1]
+        else:
+            layer_name = ""
+            component_name = name
+
         channels.append(
             {
                 "part_index": part_index,
                 "name": name,
+                "layer_name": layer_name,
+                "component_name": component_name,
                 "type": data_type,
                 "x_sampling": x_samples[idx] if idx < len(x_samples) else 1,
                 "y_sampling": y_samples[idx] if idx < len(y_samples) else 1,

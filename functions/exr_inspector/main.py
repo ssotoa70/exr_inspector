@@ -21,7 +21,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 try:
     import OpenImageIO as oiio
@@ -137,10 +137,10 @@ def handler(ctx, event):
         ctx.logger.info("Skipping non-EXR file: %s", s3_key)
         return _error_result(f"Unsupported file extension: {s3_key}")
 
-    # Download from S3
+    # Fetch EXR header from S3 (range GET — only 256KB, not the full file)
     local_path = None
     try:
-        local_path = _download_from_s3(ctx, s3_bucket, s3_key)
+        local_path, s3_file_info = _fetch_header_from_s3(ctx, s3_bucket, s3_key)
 
         result: Dict[str, Any] = {
             "schema_version": 1,
@@ -153,12 +153,17 @@ def handler(ctx, event):
             "errors": [],
         }
 
-        # Collect file info and inspect EXR
-        result["file"] = _collect_file_info(local_path)
-        result["file"]["s3_key"] = s3_key
-        result["file"]["s3_bucket"] = s3_bucket
-        result["file"]["frame_number"] = _parse_frame_number(s3_key)
+        # File info from S3 metadata (not local stat)
+        result["file"] = {
+            "path": s3_key,
+            "s3_key": s3_key,
+            "s3_bucket": s3_bucket,
+            "size_bytes": s3_file_info["size_bytes"],
+            "mtime": s3_file_info["mtime"],
+            "frame_number": _parse_frame_number(s3_key),
+        }
 
+        # Inspect EXR headers from the 256KB temp file
         exr_meta = _inspect_exr(local_path)
         result["file"].update(exr_meta.get("file", {}))
         result["parts"] = exr_meta.get("parts", [])
@@ -172,7 +177,7 @@ def handler(ctx, event):
 
         ctx.logger.info("=" * 80)
         ctx.logger.info("EXR INSPECTION RESULTS:")
-        ctx.logger.info("  File: s3://%s/%s", s3_bucket, s3_key)
+        ctx.logger.info("  File: s3://%s/%s (%d bytes)", s3_bucket, s3_key, s3_file_info["size_bytes"])
         ctx.logger.info("  Parts: %d", len(result["parts"]))
         ctx.logger.info("  Channels: %d", len(result["channels"]))
         ctx.logger.info("  Errors: %d", len(result["errors"]))
@@ -208,50 +213,59 @@ def _is_supported_extension(object_key: str) -> bool:
     return ext in SUPPORTED_EXTENSIONS
 
 
-def _download_from_s3(ctx: Any, bucket: str, key: str) -> str:
-    """Download S3 object to local ephemeral storage using the global s3_client.
+# EXR headers are typically 1-50KB. 256KB provides generous headroom for
+# deep multipart files with many attributes. This avoids downloading the
+# full file (which can be 10MB-2GB) just to read header metadata.
+HEADER_RANGE_BYTES = 256 * 1024  # 256KB
 
-    The S3 client is initialized once in init() with credentials from
-    environment variables (S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY).
+
+def _fetch_header_from_s3(ctx: Any, bucket: str, key: str) -> tuple:
+    """Fetch EXR header bytes and file metadata from S3 using a range GET.
+
+    Returns (local_path, file_info_dict) where local_path is a temp file
+    containing the header bytes, and file_info_dict has size_bytes from S3.
+
+    Only reads the first 256KB — all EXR metadata lives in the header.
+    No pixel data is transferred. Ephemeral disk usage is ~256KB per request.
     """
     if s3_client is None:
         raise RuntimeError("S3 client not initialized - check init() and env vars")
 
-    suffix = os.path.splitext(key)[1]
-    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    # HEAD request to get full file size and metadata
+    ctx.logger.info("HEAD s3://%s/%s", bucket, key)
+    head = s3_client.head_object(Bucket=bucket, Key=key)
+    full_size = head.get("ContentLength", 0)
+    last_modified = head.get("LastModified")
+
+    # Range GET: only the first 256KB (the header)
+    range_end = min(HEADER_RANGE_BYTES - 1, full_size - 1) if full_size > 0 else HEADER_RANGE_BYTES - 1
+    ctx.logger.info("Range GET s3://%s/%s bytes=0-%d (full size: %d)",
+                     bucket, key, range_end, full_size)
+
+    response = s3_client.get_object(
+        Bucket=bucket, Key=key,
+        Range=f"bytes=0-{range_end}",
+    )
+    header_bytes = response["Body"].read()
+    ctx.logger.info("Fetched %d header bytes", len(header_bytes))
+
+    # Write header to a small temp file (OIIO needs a file path)
+    tmp = tempfile.NamedTemporaryFile(suffix=".exr", delete=False)
     try:
-        ctx.logger.info("Downloading s3://%s/%s to %s", bucket, key, tmp.name)
-        s3_client.download_file(bucket, key, tmp.name)
-        file_size = os.path.getsize(tmp.name)
-        ctx.logger.info("Downloaded %d bytes", file_size)
-        return tmp.name
+        tmp.write(header_bytes)
+        tmp.flush()
+        tmp.close()
     except Exception:
         os.unlink(tmp.name)
         raise
 
+    file_info = {
+        "size_bytes": full_size,
+        "mtime": _isoformat(last_modified.timestamp()) if last_modified else "",
+    }
 
-def _collect_file_info(path: str) -> Dict[str, Any]:
-    info: Dict[str, Any] = {"path": path}
-    try:
-        stat = os.stat(path)
-    except FileNotFoundError:
-        return {
-            "path": path,
-            "error": "File not found",
-        }
-    except OSError as exc:
-        return {
-            "path": path,
-            "error": f"Stat failed: {exc}",
-        }
+    return tmp.name, file_info
 
-    info.update(
-        {
-            "size_bytes": stat.st_size,
-            "mtime": _isoformat(stat.st_mtime),
-        }
-    )
-    return info
 
 
 def _inspect_exr(path: str) -> Dict[str, Any]:

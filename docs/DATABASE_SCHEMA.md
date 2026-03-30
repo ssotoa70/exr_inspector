@@ -32,6 +32,7 @@ Root table storing one row per unique EXR file. Contains file-level metadata and
 | `multipart_count` | INT32 | Number of subimages |
 | `is_deep` | BOOL | True if any part contains deep data |
 | `metadata_embedding` | FLOAT32[384] | Deterministic vector embedding of file structure |
+| `frame_number` | INT32 | Frame number parsed from filename (e.g., 1001 from `beauty.1001.exr`). NULL if no frame pattern found. |
 | `inspection_timestamp` | STRING | First inspection time (ISO 8601) |
 | `inspection_count` | INT32 | Number of inspections |
 | `last_inspected` | STRING | Most recent inspection (ISO 8601) |
@@ -45,6 +46,12 @@ One row per EXR subimage (part). Multipart EXR files produce multiple rows.
 | `file_id` | STRING | Foreign key to `files` |
 | `file_path` | STRING | Denormalized file path |
 | `part_index` | INT32 | Zero-based subimage index |
+| `width` | INT32 | Data window width in pixels |
+| `height` | INT32 | Data window height in pixels |
+| `display_width` | INT32 | Display window width in pixels |
+| `display_height` | INT32 | Display window height in pixels |
+| `data_x_offset` | INT32 | Data window X origin (non-zero = overscan) |
+| `data_y_offset` | INT32 | Data window Y origin (non-zero = overscan) |
 | `part_name` | STRING | Part name (e.g., `beauty`, `diffuse`) |
 | `view_name` | STRING | Stereo view name (e.g., `left`, `right`) |
 | `multi_view` | BOOL | True if file declares multiView |
@@ -53,6 +60,8 @@ One row per EXR subimage (part). Multipart EXR files produce multiple rows.
 | `pixel_aspect_ratio` | FLOAT32 | Pixel width/height ratio |
 | `line_order` | STRING | `INCREASING_Y`, `DECREASING_Y`, or `RANDOM_Y` |
 | `compression` | STRING | `ZIP`, `ZIPS`, `PIZ`, `DWAA`, `DWAB`, `RLE`, `NONE`, etc. |
+| `color_space` | STRING | Color space (e.g., `ACES - ACEScg`, `sRGB`, `Linear`). From `oiio:ColorSpace` or `colorspace` attribute. |
+| `render_software` | STRING | Software that produced the file (e.g., `Arnold 7.2.1`, `RenderMan 25`). From `software` attribute. |
 | `is_tiled` | BOOL | True if tiled storage |
 | `tile_width` | INT32 | Tile width in pixels (NULL if scanline) |
 | `tile_height` | INT32 | Tile height in pixels |
@@ -69,6 +78,8 @@ One row per channel (AOV) per part. Includes a 128-dimensional fingerprint vecto
 | `file_path` | STRING | Denormalized file path |
 | `part_index` | INT32 | Subimage index |
 | `channel_name` | STRING | Full channel name (e.g., `beauty.R`, `Z`, `A`) |
+| `layer_name` | STRING | Layer portion of channel name (e.g., `beauty` from `beauty.R`). Empty for flat channels like `R`, `Z`. |
+| `component_name` | STRING | Component portion (e.g., `R` from `beauty.R`). For flat channels, same as channel_name. |
 | `channel_type` | STRING | `HALF` (16-bit), `FLOAT` (32-bit), `UINT` (32-bit unsigned) |
 | `x_sampling` | INT32 | Horizontal subsampling (1 = full res) |
 | `y_sampling` | INT32 | Vertical subsampling (1 = full res) |

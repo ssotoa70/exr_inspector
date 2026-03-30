@@ -371,7 +371,7 @@ class TestPyArrowConversion(unittest.TestCase):
         table = payload_to_attributes_rows(payload, "file_id_1")
 
         self.assertEqual(table.num_rows, 2)
-        self.assertIn("attribute_name", table.column_names)
+        self.assertIn("attr_name", table.column_names)
 
 
 @unittest.skipIf(pa is None, "pyarrow not installed")

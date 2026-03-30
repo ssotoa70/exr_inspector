@@ -629,18 +629,24 @@ def payload_to_attributes_rows(
         ("file_id", pa.string()),
         ("file_path", pa.string()),
         ("part_index", pa.int32()),
-        ("attribute_name", pa.string()),
-        ("attribute_type", pa.string()),
-        ("attribute_value", pa.string()),  # JSON serialized
+        ("attr_name", pa.string()),
+        ("attr_type", pa.string()),
+        ("value_json", pa.string()),
+        ("value_text", pa.string()),
+        ("value_int", pa.int64()),
+        ("value_float", pa.float64()),
     ])
 
     data = {
         "file_id": [],
         "file_path": [],
         "part_index": [],
-        "attribute_name": [],
-        "attribute_type": [],
-        "attribute_value": [],
+        "attr_name": [],
+        "attr_type": [],
+        "value_json": [],
+        "value_text": [],
+        "value_int": [],
+        "value_float": [],
     }
 
     for part_idx, part_attrs in enumerate(parts_attrs):
@@ -648,14 +654,16 @@ def payload_to_attributes_rows(
             continue
 
         for attr in part_attrs:
+            value = attr.get("value")
             data["file_id"].append(file_id)
             data["file_path"].append(file_path)
             data["part_index"].append(part_idx)
-            data["attribute_name"].append(attr.get("name", ""))
-            data["attribute_type"].append(attr.get("type", ""))
-            data["attribute_value"].append(
-                json.dumps(attr.get("value"))
-            )
+            data["attr_name"].append(attr.get("name", ""))
+            data["attr_type"].append(attr.get("type", ""))
+            data["value_json"].append(json.dumps(value))
+            data["value_text"].append(str(value) if isinstance(value, str) else None)
+            data["value_int"].append(int(value) if isinstance(value, (int,)) and not isinstance(value, bool) else None)
+            data["value_float"].append(float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None)
 
     return pa.table(data, schema=schema)
 

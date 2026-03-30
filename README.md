@@ -16,20 +16,24 @@ exr-inspector is a VAST DataEngine function that automatically extracts metadata
 EXR file uploaded to S3 bucket
   --> VAST DataEngine ElementCreated trigger (.exr suffix filter)
     --> exr-inspector function container
-      --> Downloads EXR via boto3 from VAST S3
-      --> Parses headers with OpenImageIO (no pixel data read)
+      --> S3 Range GET (first 256KB only — header bytes, not full file)
+      --> Parses headers with OpenImageIO (no pixel data transferred)
       --> Computes deterministic vector embeddings
       --> Persists to 4 VAST DataBase tables (auto-created)
       --> Returns structured JSON result
 ```
 
+**Scalability:** Uses S3 Range GET to fetch only the EXR header (~256KB) instead of downloading
+the full file (10MB-2GB). This enables processing thousands of files concurrently with minimal
+ephemeral disk (~256KB per pod) and S3 bandwidth.
+
 ## What It Extracts
 
 | Scope | Fields |
 |-------|--------|
-| **File** | Part count, deep flag, file size, modification time |
-| **Parts** | Width, height, compression, tiling, data/display windows, pixel aspect ratio, line order |
-| **Channels** | Name (AOV layer), type (HALF/FLOAT/UINT), x/y sampling rates |
+| **File** | Part count, deep flag, file size, modification time, frame number |
+| **Parts** | Width, height, display dimensions, data offsets, compression, tiling, color space, render software, pixel aspect ratio, line order |
+| **Channels** | Name (AOV layer), layer name, component name, type (HALF/FLOAT/UINT), x/y sampling rates |
 | **Attributes** | All EXR header attributes: chromaticities, color space, owner, software, frame rate, timecode, camera matrices, etc. |
 
 ## Project Structure

@@ -1,8 +1,8 @@
 # Python dependencies for the exr-inspector DataEngine function
 #
-# OpenImageIO is provided by the system package libopenimageio-dev (see Aptfile).
-# The Python bindings are included in that package and do NOT need a pip install.
-#
+# OpenImageIO Python bindings:
+OpenImageIO>=2.2
+
 # S3 access for downloading EXR files from VAST bucket:
 boto3>=1.28.0
 

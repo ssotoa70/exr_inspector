@@ -386,9 +386,10 @@ def _extract_window_ints(window: Any) -> Optional[Dict[str, int]]:
 
 
 def _spec_to_channels(spec: Any, part_index: int) -> List[Dict[str, Any]]:
-    channel_formats = spec.channelformats or []
-    x_samples = spec.x_channel_samples or []
-    y_samples = spec.y_channel_samples or []
+    channel_formats = getattr(spec, "channelformats", None) or []
+    # OIIO 3.x removed x_channel_samples/y_channel_samples; default to 1
+    x_samples = getattr(spec, "x_channel_samples", None) or []
+    y_samples = getattr(spec, "y_channel_samples", None) or []
     channels: List[Dict[str, Any]] = []
     for idx, name in enumerate(spec.channelnames):
         if channel_formats and idx < len(channel_formats):

@@ -745,7 +745,7 @@ def _create_vastdb_session(
             access_key = secrets.get("access_key")
             secret_key = secrets.get("secret_key")
             logger.debug("Credentials loaded from ctx.secrets['%s']", secret_name)
-        except (AttributeError, KeyError, TypeError):
+        except Exception:
             logger.debug("ctx.secrets['%s'] not available, falling back to env", secret_name)
 
     # Fallback: environment variables

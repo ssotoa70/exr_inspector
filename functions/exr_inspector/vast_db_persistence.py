@@ -382,7 +382,7 @@ def payload_to_files_row(
         ("mtime", pa.string()),
         ("multipart_count", pa.int32()),
         ("is_deep", pa.bool_()),
-        ("metadata_embedding", pa.list_(pa.float32())),
+        ("metadata_embedding", pa.list_(pa.field(name="item", type=pa.float32(), nullable=False), DEFAULT_METADATA_EMBEDDING_DIM)),
         ("frame_number", pa.int32()),
         ("inspection_timestamp", pa.string()),
         ("inspection_count", pa.int32()),
@@ -561,7 +561,7 @@ def payload_to_channels_rows(
         ("channel_type", pa.string()),
         ("x_sampling", pa.int32()),
         ("y_sampling", pa.int32()),
-        ("channel_fingerprint", pa.list_(pa.float32())),
+        ("channel_fingerprint", pa.list_(pa.field(name="item", type=pa.float32(), nullable=False), DEFAULT_CHANNEL_FINGERPRINT_DIM)),
     ])
 
     data = {
@@ -589,7 +589,7 @@ def payload_to_channels_rows(
         data["y_sampling"].append(channel.get("y_sampling", 1))
         # Include fingerprint only in first row to avoid duplication
         data["channel_fingerprint"].append(
-            channel_fingerprint if idx == 0 else []
+            channel_fingerprint if idx == 0 else [0.0] * DEFAULT_CHANNEL_FINGERPRINT_DIM
         )
 
     return pa.table(data, schema=schema)

@@ -106,10 +106,21 @@ Complex OIIO types (vectors, matrices, bounding boxes, chromaticities) are seria
 
 The persistence layer:
 
-1. **Auto-provisions** schema and tables on first run (DDL in separate transaction)
-2. **Computes embeddings** -- 384D metadata embedding + 128D channel fingerprint (deterministic, no ML)
-3. **Converts to PyArrow** -- One PyArrow table per database table
-4. **Inserts in transaction** -- files first, then parts/channels/attributes
+1. **Auto-provisions** schema and tables on first run (DDL in `init()`, separate transaction)
+2. **Idempotent upsert** -- SELECT by `file_id` before insert. If the file already exists, updates `last_inspected` and increments `inspection_count`. No duplicate rows on re-ingestion.
+3. **Computes embeddings** -- 384D metadata embedding + 128D channel fingerprint (deterministic, no ML)
+4. **Converts to PyArrow** -- One PyArrow table per database table
+5. **Inserts in transaction** -- files first, then parts/channels/attributes
+
+### Idempotency
+
+The `file_id` is deterministic: `SHA256(path + mtime + header_hash)`.
+
+| Scenario | Behavior |
+|----------|----------|
+| New file | SELECT finds nothing -> INSERT all 4 tables |
+| Re-ingested (same content) | Same `file_id` -> UPDATE audit fields only |
+| Re-ingested (modified content) | Different `header_hash` -> new `file_id` -> INSERT as new |
 
 Credentials fall back through: `VAST_DB_ENDPOINT` -> `S3_ENDPOINT`, `VAST_DB_ACCESS_KEY` -> `S3_ACCESS_KEY`.
 
@@ -122,6 +133,7 @@ Credentials fall back through: `VAST_DB_ENDPOINT` -> `S3_ENDPOINT`, `VAST_DB_ACC
 | **Global S3 client** | Matches VAST DataEngine best practice. Created once in `init()`, reused per-request. |
 | **Environment variables for credentials** | Consistent with working DataEngine functions. Set in pipeline config. |
 | **Deterministic embeddings** | No ML model dependency in the container. SHA256-based expansion to target dimensions. |
+| **Idempotent upsert** | SELECT before INSERT prevents duplicates. Safe for re-ingestion. |
 | **Auto-provisioning tables** | Function is self-contained. No manual schema setup required. |
 | **Denormalized file_path** | Avoids JOINs for common queries. Small storage trade-off for query performance. |
 | **LD_LIBRARY_PATH Dockerfile.fix** | CNB buildpack exec.d mechanism doesn't set library paths correctly on all platforms. |

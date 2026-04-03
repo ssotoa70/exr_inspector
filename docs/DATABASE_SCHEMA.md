@@ -118,6 +118,24 @@ The `create_schema` and `create_table` calls are NOT idempotent in the vastdb SD
 
 **Note:** The database bucket must pre-exist as a Database-enabled view. The SDK cannot create buckets.
 
+## Idempotent Upsert
+
+The function prevents duplicate rows when the same files are re-ingested:
+
+1. Before inserting, **SELECT by `file_id`** from the files table
+2. If found: **UPDATE** `last_inspected` timestamp and increment `inspection_count`
+3. If not found: **INSERT** into all 4 tables
+
+The `file_id` is deterministic (`SHA256(path + mtime + header_hash)`), so:
+
+| Scenario | Result |
+|----------|--------|
+| New file | New `file_id` -> INSERT |
+| Same file re-ingested (unchanged) | Same `file_id` -> UPDATE audit fields |
+| Same file re-ingested (modified) | Different `header_hash` -> new `file_id` -> INSERT as new record |
+
+This ensures the database reflects the current state without accumulating duplicates.
+
 ## Trino Query Examples
 
 Connect to Trino and set the default schema:

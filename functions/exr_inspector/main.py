@@ -21,7 +21,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 try:
     import OpenImageIO as oiio
@@ -35,26 +35,33 @@ except ImportError:  # pragma: no cover - runtime dependency
     boto3 = None
     ClientError = Exception
 
-from vast_db_persistence import persist_to_vast_database
+from vast_db_persistence import (
+    persist_to_vast_database,
+    _create_vastdb_session,
+    ensure_database_tables,
+)
 
 SUPPORTED_EXTENSIONS = {".exr"}
 
-# Global S3 client — initialized once in init(), reused for all requests
+# Global state — initialized once in init(), reused for all requests
 s3_client = None
+vastdb_session = None
+_tables_verified = False
 
 
 def init(ctx):
     """One-time initialization when the function container starts.
 
-    Sets up the S3 client with credentials from environment variables
-    (set via pipeline config). This client is reused for all requests.
+    Sets up S3 client, VastDB session, and verifies database tables.
+    All three are created once and reused for every request.
     """
-    global s3_client
+    global s3_client, vastdb_session, _tables_verified
 
     ctx.logger.info("=" * 80)
     ctx.logger.info("INITIALIZING EXR-INSPECTOR %s", __version__)
     ctx.logger.info("=" * 80)
 
+    # --- S3 client ---
     s3_endpoint = os.environ.get("S3_ENDPOINT", "")
     s3_access_key = os.environ.get("S3_ACCESS_KEY", "")
     s3_secret_key = os.environ.get("S3_SECRET_KEY", "")
@@ -68,15 +75,36 @@ def init(ctx):
         ctx.logger.warning("S3 credentials incomplete - S3 operations will fail")
 
     if boto3 is not None:
+        from botocore.config import Config
+        s3_config = Config(
+            max_pool_connections=25,
+            retries={"max_attempts": 3, "mode": "adaptive"},
+            connect_timeout=5,
+            read_timeout=10,
+        )
         s3_client = boto3.client(
             "s3",
             endpoint_url=s3_endpoint,
             aws_access_key_id=s3_access_key,
             aws_secret_access_key=s3_secret_key,
+            config=s3_config,
         )
-        ctx.logger.info("S3 client created successfully")
+        ctx.logger.info("S3 client created (pool=25, retries=adaptive)")
     else:
         ctx.logger.error("boto3 not available")
+
+    # --- VastDB session (reused for all events) ---
+    try:
+        vastdb_session = _create_vastdb_session(ctx=ctx)
+        if vastdb_session:
+            ctx.logger.info("VastDB session created")
+            ensure_database_tables(vastdb_session)
+            _tables_verified = True
+            ctx.logger.info("Database tables verified")
+        else:
+            ctx.logger.warning("VastDB not configured - persistence will be skipped")
+    except Exception as exc:
+        ctx.logger.error("VastDB init failed (will retry per-event): %s", exc)
 
     ctx.logger.info("OpenImageIO: %s", "available" if oiio else "NOT AVAILABLE")
     ctx.logger.info("EXR-INSPECTOR initialized successfully")
@@ -171,8 +199,10 @@ def handler(ctx, event):
         result["attributes"] = exr_meta.get("attributes", {})
         result["errors"].extend(exr_meta.get("errors", []))
 
-        # Persist to VAST DataBase
-        persistence_result = persist_to_vast_database(result, ctx=ctx)
+        # Persist to VAST DataBase (reuses session from init)
+        persistence_result = persist_to_vast_database(
+            result, ctx=ctx, vastdb_session=vastdb_session,
+        )
         result["persistence"] = persistence_result
 
         ctx.logger.info("=" * 80)
@@ -231,23 +261,22 @@ def _fetch_header_from_s3(ctx: Any, bucket: str, key: str) -> tuple:
     if s3_client is None:
         raise RuntimeError("S3 client not initialized - check init() and env vars")
 
-    # HEAD request to get full file size and metadata
-    ctx.logger.info("HEAD s3://%s/%s", bucket, key)
-    head = s3_client.head_object(Bucket=bucket, Key=key)
-    full_size = head.get("ContentLength", 0)
-    last_modified = head.get("LastModified")
-
-    # Range GET: only the first 256KB (the header)
-    range_end = min(HEADER_RANGE_BYTES - 1, full_size - 1) if full_size > 0 else HEADER_RANGE_BYTES - 1
-    ctx.logger.info("Range GET s3://%s/%s bytes=0-%d (full size: %d)",
-                     bucket, key, range_end, full_size)
-
+    # Single Range GET — no HEAD needed. Content-Range header has full size.
     response = s3_client.get_object(
         Bucket=bucket, Key=key,
-        Range=f"bytes=0-{range_end}",
+        Range=f"bytes=0-{HEADER_RANGE_BYTES - 1}",
     )
     header_bytes = response["Body"].read()
-    ctx.logger.info("Fetched %d header bytes", len(header_bytes))
+
+    # Extract full file size from Content-Range: "bytes 0-262143/10485760"
+    content_range = response.get("ContentRange", "")
+    if "/" in str(content_range):
+        full_size = int(str(content_range).split("/")[1])
+    else:
+        full_size = response.get("ContentLength", len(header_bytes))
+
+    last_modified = response.get("LastModified")
+    ctx.logger.info("s3://%s/%s: %d header bytes, %d total", bucket, key, len(header_bytes), full_size)
 
     # Write header to a small temp file (OIIO needs a file path)
     tmp = tempfile.NamedTemporaryFile(suffix=".exr", delete=False)

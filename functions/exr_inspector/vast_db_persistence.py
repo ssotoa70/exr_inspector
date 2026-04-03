@@ -843,8 +843,9 @@ def persist_to_vast_database(
             logger.debug(f"VAST persistence skipped for {file_path}")
             return result
 
-        # Ensure schema and tables exist (DDL in separate transaction)
-        ensure_database_tables(session)
+        # Only run DDL if session was not pre-initialized in init()
+        if vastdb_session is None:
+            ensure_database_tables(session)
 
         # Compute vector embeddings
         logger.debug(f"Computing embeddings for {file_path}")

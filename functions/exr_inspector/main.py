@@ -226,7 +226,7 @@ def handler(ctx, event):
             os.unlink(local_path)
 
 
-_FRAME_NUMBER_RE = re.compile(r'\.(\d{3,8})\.exr$', re.IGNORECASE)
+_FRAME_NUMBER_RE = re.compile(r'[._](\d{3,8})\.exr$', re.IGNORECASE)
 
 
 def _parse_frame_number(s3_key: str) -> Optional[int]:
